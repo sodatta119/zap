@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>zap — sign in</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23f5a623' d='M13 2L4.5 13.5H11l-1 8.5L19.5 10H13z'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --accent: #f5a623; --accent-2: #ff8c42;
+    --bg: #f6f5f2; --bg-tint: #fbf7ef; --fg: #23211d; --muted-fg: #7c766c;
+    --card: #ffffff; --line: rgba(0,0,0,0.08); --field: rgba(0,0,0,0.03);
+    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 14px 40px rgba(120,90,20,0.10); --glow: rgba(245,166,35,0.28);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0f; --bg-tint: #131218; --fg: #f1f1f3; --muted-fg: #8b8b93;
+      --card: #16161a; --line: rgba(255,255,255,0.09); --field: rgba(255,255,255,0.05);
+      --shadow: 0 20px 50px rgba(0,0,0,0.55); --glow: rgba(245,166,35,0.20);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; min-height: 100vh; color: var(--fg);
+    display: grid; place-items: center; padding: 24px;
+    background:
+      radial-gradient(900px 360px at 50% -120px, var(--glow), transparent 70%),
+      linear-gradient(var(--bg-tint), var(--bg) 300px);
+    -webkit-font-smoothing: antialiased;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+  .card {
+    width: 100%; max-width: 360px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow);
+    padding: 30px 26px; text-align: center; animation: rise .5s cubic-bezier(.2,.7,.2,1) both;
+  }
+  .logo {
+    width: 54px; height: 54px; margin: 0 auto 16px; display: grid; place-items: center;
+    background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent-2) 14%, transparent));
+    border-radius: 15px; box-shadow: 0 8px 22px var(--glow);
+  }
+  .logo svg { width: 30px; height: 30px; }
+  h1 { margin: 0 0 4px; font-size: 21px; font-weight: 750; letter-spacing: -0.02em; }
+  .sub { margin: 0 0 24px; font-size: 13px; color: var(--muted-fg); }
+  form { text-align: left; }
+  label { display: block; font-size: 12px; font-weight: 600; color: var(--muted-fg); margin: 0 0 6px; }
+  input {
+    width: 100%; font: inherit; font-size: 15px; padding: 12px 14px; margin-bottom: 16px;
+    color: var(--fg); background: var(--field); border: 1px solid var(--line);
+    border-radius: 12px; outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+  button {
+    width: 100%; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
+    color: #1a1a1a; background: linear-gradient(180deg, var(--accent), #eb9a15);
+    border: none; border-radius: 12px; padding: 13px; margin-top: 4px;
+    transition: filter .15s, opacity .15s;
+  }
+  button:hover { filter: brightness(1.05); }
+  button:disabled { opacity: .6; cursor: default; }
+  .err {
+    min-height: 18px; margin: 12px 2px 0; font-size: 13px; color: #e0554b; text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"><svg viewBox="0 0 24 24"><path fill="var(--accent)" d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></div>
+    <h1>Sign in to zap</h1>
+    <p class="sub">Enter the credentials shared with you</p>
+    <form id="f" autocomplete="off">
+      <label for="u">Username</label>
+      <input id="u" name="user" type="text" autocomplete="username" autofocus>
+      <label for="p">Password</label>
+      <input id="p" name="pass" type="password" autocomplete="current-password">
+      <button id="btn" type="submit">Sign in</button>
+      <div class="err" id="err"></div>
+    </form>
+  </div>
+<script>
+  const form = document.getElementById("f");
+  const err = document.getElementById("err");
+  const btn = document.getElementById("btn");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    const body = new URLSearchParams();
+    body.set("user", document.getElementById("u").value);
+    body.set("pass", document.getElementById("p").value);
+    btn.disabled = true; btn.textContent = "Signing in…";
+    try {
+      const res = await fetch("/login", { method: "POST", body });
+      if (res.ok) { location.href = "/"; return; }
+      err.textContent = "Incorrect username or password";
+    } catch (_) {
+      err.textContent = "Could not connect. Try again.";
+    }
+    btn.disabled = false; btn.textContent = "Sign in";
+  });
+</script>
+</body>
+</html>

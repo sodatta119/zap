@@ -1,0 +1,15 @@
+[package]
+name = "zap-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JNI bindings that let the Android app host the zap web server"
+
+[lib]
+name = "zap_android"
+# cdylib -> a shared library (.so on Android) loadable by the JVM via JNI.
+crate-type = ["cdylib"]
+
+[dependencies]
+zap-core.workspace = true
+jni.workspace = true

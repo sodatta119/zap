@@ -1,0 +1,26 @@
+[package]
+name = "zap-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop GUI for zap (macOS / Windows / Linux)"
+
+[[bin]]
+name = "zap-desktop"
+path = "src/main.rs"
+
+[dependencies]
+zap-core.workspace = true
+anyhow.workspace = true
+qrcode.workspace = true
+eframe = "0.29"
+rfd = "0.15"
+dirs = "5"
+
+# Used by `cargo bundle` to produce the macOS .app / other installers.
+[package.metadata.bundle]
+name = "zap"
+identifier = "com.zap.transfer"
+short_description = "Lightning-fast file transfer over Wi-Fi"
+category = "public.app-category.utilities"
+icon = ["assets/icon.icns", "assets/icon.ico", "assets/icon_1024.png"]

@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>zap</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23f5a623' d='M13 2L4.5 13.5H11l-1 8.5L19.5 10H13z'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --accent: #f5a623;
+    --accent-2: #ff8c42;
+    /* Soft, warm light theme — not stark white */
+    --bg: #f6f5f2;
+    --bg-tint: #fbf7ef;
+    --fg: #23211d;
+    --muted: #86807636;
+    --muted-fg: #7c766c;
+    --card: #ffffff;
+    --line: rgba(0,0,0,0.07);
+    --hover: rgba(0,0,0,0.035);
+    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 12px 34px rgba(120,90,20,0.08);
+    --glow: rgba(245,166,35,0.28);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0f;
+      --bg-tint: #131218;
+      --fg: #f1f1f3;
+      --muted-fg: #8b8b93;
+      --card: #16161a;
+      --line: rgba(255,255,255,0.09);
+      --hover: rgba(255,255,255,0.05);
+      --shadow: 0 8px 30px rgba(0,0,0,0.5);
+      --glow: rgba(245,166,35,0.22);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
+  body {
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; padding: 22px 16px 80px;
+    max-width: 680px; margin-inline: auto;
+    color: var(--fg);
+    background:
+      radial-gradient(1200px 400px at 50% -160px, var(--glow), transparent 70%),
+      linear-gradient(var(--bg-tint), var(--bg) 240px);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  /* ---- entrance animation ---- */
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .rise { animation: rise .55s cubic-bezier(.2,.7,.2,1) both; }
+  @media (prefers-reduced-motion: reduce) { .rise { animation: none; } }
+
+  header { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
+  .logo {
+    position: relative; width: 46px; height: 46px; flex: none;
+    display: grid; place-items: center;
+    background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent-2) 14%, transparent));
+    border-radius: 13px;
+    box-shadow: 0 6px 18px var(--glow);
+  }
+  .logo svg { width: 26px; height: 26px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.2)); animation: bolt 3.4s ease-in-out infinite; }
+  @keyframes bolt { 0%,88%,100% { transform: scale(1) rotate(0); } 92% { transform: scale(1.16) rotate(-6deg); } 96% { transform: scale(1.16) rotate(4deg); } }
+  .brand h1 { margin: 0; font-size: 23px; font-weight: 750; letter-spacing: -0.02em; }
+  .brand p { margin: 1px 0 0; font-size: 12.5px; color: var(--muted-fg); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 15px 17px; min-height: 30px;
+  }
+  .card-head + .body { border-top: 1px solid var(--line); }
+  .card-head h2 { margin: 0; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-fg); }
+
+  /* Drop zone */
+  #drop {
+    margin: 16px;
+    border: 2px dashed color-mix(in srgb, var(--fg) 16%, transparent);
+    border-radius: 14px;
+    padding: 28px 16px; text-align: center; cursor: pointer;
+    transition: border-color .18s, background .18s, transform .18s;
+  }
+  #drop:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  #drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); transform: scale(1.015); }
+  #drop input { display: none; }
+  #drop .big { font-weight: 600; font-size: 15px; }
+  #drop .big b { color: var(--accent); }
+  #drop .hint { color: var(--muted-fg); font-size: 12.5px; margin-top: 5px; }
+  #drop .hint code { background: var(--hover); padding: 1px 7px; border-radius: 6px; font-size: 12px; }
+
+  ul { list-style: none; margin: 0; padding: 0; }
+
+  #uploads { padding: 0 16px 6px; }
+  #uploads li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0; border-top: 1px solid var(--line); font-size: 13.5px;
+  }
+  #uploads .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { flex: 1.2; height: 6px; border-radius: 99px; background: var(--hover); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; border-radius: 99px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width .18s ease; }
+  .tag { font-size: 11.5px; min-width: 46px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  .tag.done { color: #2e9e57; } .tag.err { color: #e0554b; }
+
+  /* Breadcrumb */
+  .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; font-size: 13px; min-width: 0; }
+  .crumbs button {
+    font: inherit; background: none; border: none; cursor: pointer; color: var(--accent);
+    padding: 4px 7px; border-radius: 8px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    transition: background .12s;
+  }
+  .crumbs button:hover { background: var(--hover); }
+  .crumbs button:last-child { color: var(--fg); font-weight: 600; cursor: default; }
+  .crumbs .sep { color: var(--muted-fg); font-size: 11px; opacity: .7; }
+  .icon-btn {
+    font: inherit; font-size: 15px; line-height: 1; cursor: pointer; color: var(--fg);
+    background: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px;
+    transition: background .12s, transform .3s;
+  }
+  .icon-btn:hover { background: var(--hover); }
+  .icon-btn.spin { transform: rotate(360deg); }
+  .head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+  .search {
+    font: inherit; font-size: 13px; padding: 7px 11px; width: 132px;
+    color: var(--fg); background: var(--hover);
+    border: 1px solid var(--line); border-radius: 9px; outline: none;
+    transition: border-color .15s, width .2s;
+  }
+  .search::placeholder { color: var(--muted-fg); }
+  .search:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); width: 150px; }
+  @media (max-width: 420px) { .search { width: 108px; } .search:focus { width: 120px; } }
+
+  /* File / folder rows */
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 17px; border-top: 1px solid var(--line);
+    cursor: pointer; text-decoration: none; color: inherit;
+    transition: background .12s, padding-left .15s;
+    animation: rise .4s ease both;
+  }
+  .row:hover { background: var(--hover); padding-left: 21px; }
+  .row:active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .row .ico { width: 24px; text-align: center; font-size: 18px; flex: none; }
+  .row .label { flex: 1; overflow: hidden; min-width: 0; }
+  .row .label .nm, .row .label { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+  .row .label .path { display: block; font-size: 11px; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .meta { font-size: 11.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  .row .chev { color: var(--muted-fg); font-size: 13px; opacity: .6; }
+  .empty, .loading { padding: 30px 16px; text-align: center; color: var(--muted-fg); font-size: 13.5px; }
+  .spinner {
+    display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 8px;
+    border: 2px solid color-mix(in srgb, var(--fg) 20%, transparent);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <header class="rise">
+    <span class="logo"><svg viewBox="0 0 24 24"><path fill="var(--accent)" d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></span>
+    <div class="brand">
+      <h1>zap</h1>
+      <p>Lightning-fast file transfer over Wi-Fi</p>
+    </div>
+  </header>
+
+  <section class="card rise" style="animation-delay:.06s">
+    <div class="card-head"><h2>Send files</h2></div>
+    <div class="body">
+      <label id="drop">
+        <input type="file" id="file" multiple>
+        <div class="big"><b>Tap to choose files</b> or drop them here</div>
+        <div class="hint">Uploads into <code id="uploadTarget">this folder</code></div>
+      </label>
+      <ul id="uploads"></ul>
+    </div>
+  </section>
+
+  <section class="card rise" style="animation-delay:.12s">
+    <div class="card-head">
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="head-actions">
+        <input id="search" class="search" type="search" placeholder="Search files…" autocomplete="off" spellcheck="false">
+        <button class="icon-btn" id="refresh" title="Refresh">↻</button>
+      </div>
+    </div>
+    <ul id="list" class="body"><li class="loading">Loading…</li></ul>
+  </section>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let currentPath = "";
+
+function fmtSize(n) {
+  if (n == null) return "";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+}
+function joinPath(base, name) { return base ? base + "/" + name : name; }
+function parentDir(path) { const i = path.lastIndexOf("/"); return i < 0 ? "" : path.slice(0, i); }
+
+const FOLDER_SVG = `<svg viewBox="0 0 24 24" width="21" height="21"><path fill="#f5b301" d="M10 4H4c-1.1 0-1.99 0.9 -1.99 2L2 18c0 1.1 0.9 2 2 2h16c1.1 0 2-0.9 2-2V8c0-1.1-0.9-2-2-2h-8l-2-2z"/></svg>`;
+const FILE_SVG = `<svg viewBox="0 0 24 24" width="19" height="19"><path fill="#9aa0a6" d="M14 2H6c-1.1 0-2 0.9-2 2v16c0 1.1 0.9 2 2 2h12c1.1 0 2-0.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>`;
+
+async function loadDir(path) {
+  const listEl = $("#list");
+  listEl.innerHTML = '<li class="loading"><span class="spinner"></span>Loading…</li>';
+  try {
+    const res = await fetch("/api/list?path=" + encodeURIComponent(path));
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    currentPath = data.path || "";
+    renderCrumbs(currentPath);
+    renderList(data.entries || []);
+    $("#uploadTarget").textContent = currentPath ? "/" + currentPath : "the home folder";
+  } catch (e) {
+    listEl.innerHTML = '<li class="empty">Could not open this folder.</li>';
+  }
+}
+
+function renderCrumbs(path) {
+  const crumbs = $("#crumbs");
+  crumbs.innerHTML = "";
+  const parts = path ? path.split("/") : [];
+  const mk = (label, target, isLast) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (!isLast) b.onclick = () => loadDir(target);
+    crumbs.appendChild(b);
+  };
+  mk("🏠 Home", "", parts.length === 0);
+  let acc = "";
+  parts.forEach((p, i) => {
+    const sep = document.createElement("span");
+    sep.className = "sep"; sep.textContent = "›";
+    crumbs.appendChild(sep);
+    acc = joinPath(acc, p);
+    mk(p, acc, i === parts.length - 1);
+  });
+}
+
+function renderList(entries) {
+  const listEl = $("#list");
+  listEl.innerHTML = "";
+  if (!entries.length) {
+    listEl.innerHTML = '<li class="empty">This folder is empty.</li>';
+    return;
+  }
+  entries.forEach((e, i) => {
+    const li = document.createElement("li");
+    const el = e.dir ? document.createElement("div") : document.createElement("a");
+    el.className = "row";
+    el.style.animationDelay = Math.min(i * 28, 400) + "ms"; // staggered reveal
+    if (e.dir) {
+      el.innerHTML = `<span class="ico">${FOLDER_SVG}</span><span class="label"></span><span class="chev">›</span>`;
+      el.onclick = () => loadDir(joinPath(currentPath, e.name));
+    } else {
+      el.href = "/download?path=" + encodeURIComponent(joinPath(currentPath, e.name));
+      el.setAttribute("download", e.name);
+      el.innerHTML = `<span class="ico">${FILE_SVG}</span><span class="label"></span><span class="meta">${fmtSize(e.size)}</span><span class="chev">⬇</span>`;
+    }
+    el.querySelector(".label").textContent = e.name;
+    li.appendChild(el);
+    listEl.appendChild(li);
+  });
+}
+
+// ---- Search across the whole shared folder ----
+async function loadSearch(query) {
+  const listEl = $("#list");
+  listEl.innerHTML = '<li class="loading"><span class="spinner"></span>Searching…</li>';
+  try {
+    const res = await fetch("/api/search?q=" + encodeURIComponent(query));
+    const data = await res.json();
+    renderSearchCrumbs(data.query || query);
+    renderResults(data.entries || []);
+  } catch (e) {
+    listEl.innerHTML = '<li class="empty">Search failed.</li>';
+  }
+}
+
+function renderSearchCrumbs(query) {
+  const crumbs = $("#crumbs");
+  crumbs.innerHTML = "";
+  const home = document.createElement("button");
+  home.textContent = "🏠 Home";
+  home.onclick = () => exitSearch();
+  crumbs.appendChild(home);
+  const sep = document.createElement("span");
+  sep.className = "sep"; sep.textContent = "›";
+  crumbs.appendChild(sep);
+  const cur = document.createElement("button");
+  cur.textContent = "🔍 " + query;
+  crumbs.appendChild(cur);
+}
+
+function renderResults(entries) {
+  const listEl = $("#list");
+  listEl.innerHTML = "";
+  if (!entries.length) {
+    listEl.innerHTML = '<li class="empty">No matching files.</li>';
+    return;
+  }
+  entries.forEach((e, i) => {
+    const li = document.createElement("li");
+    const el = e.dir ? document.createElement("div") : document.createElement("a");
+    el.className = "row";
+    el.style.animationDelay = Math.min(i * 24, 360) + "ms";
+    const loc = parentDir(e.path);
+    const right = e.dir
+      ? `<span class="chev">›</span>`
+      : `<span class="meta">${fmtSize(e.size)}</span><span class="chev">⬇</span>`;
+    el.innerHTML = `<span class="ico">${e.dir ? FOLDER_SVG : FILE_SVG}</span>` +
+      `<span class="label"><span class="nm"></span><small class="path"></small></span>${right}`;
+    el.querySelector(".nm").textContent = e.name;
+    el.querySelector(".path").textContent = loc ? "in /" + loc : "in Home";
+    if (e.dir) {
+      el.onclick = () => { exitSearch(); loadDir(e.path); };
+    } else {
+      el.href = "/download?path=" + encodeURIComponent(e.path);
+      el.setAttribute("download", e.name);
+    }
+    li.appendChild(el);
+    listEl.appendChild(li);
+  });
+}
+
+function exitSearch() {
+  $("#search").value = "";
+  loadDir(currentPath);
+}
+
+// ---- Upload into the current folder ----
+const drop = $("#drop"), fileInput = $("#file"), uploads = $("#uploads");
+["dragenter", "dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => uploadFiles(e.dataTransfer.files));
+fileInput.addEventListener("change", () => { uploadFiles(fileInput.files); fileInput.value = ""; });
+
+function uploadFiles(list) { for (const f of list) uploadOne(f); }
+
+function uploadOne(file) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="name"></span><div class="bar"><i></i></div><span class="tag">0%</span>`;
+  li.querySelector(".name").textContent = file.name;
+  uploads.prepend(li);
+  const bar = li.querySelector(".bar > i"), tag = li.querySelector(".tag");
+
+  const xhr = new XMLHttpRequest();
+  const url = "/upload?path=" + encodeURIComponent(currentPath) + "&name=" + encodeURIComponent(file.name);
+  xhr.open("PUT", url);
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    bar.style.width = pct + "%"; tag.textContent = pct + "%";
+  };
+  xhr.onload = () => {
+    const ok = xhr.status >= 200 && xhr.status < 300;
+    bar.style.width = "100%";
+    tag.textContent = ok ? "done" : "failed";
+    tag.classList.add(ok ? "done" : "err");
+    if (ok) loadDir(currentPath);
+  };
+  xhr.onerror = () => { tag.textContent = "error"; tag.classList.add("err"); };
+  xhr.send(file);
+}
+
+const refresh = $("#refresh");
+refresh.onclick = () => {
+  refresh.classList.add("spin");
+  setTimeout(() => refresh.classList.remove("spin"), 350);
+  const q = $("#search").value.trim();
+  q ? loadSearch(q) : loadDir(currentPath);
+};
+
+const search = $("#search");
+search.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const q = search.value.trim();
+  q ? loadSearch(q) : loadDir(currentPath);
+});
+// Native clear button (the "x") fires a 'search' event with empty value.
+search.addEventListener("search", () => {
+  if (!search.value.trim()) loadDir(currentPath);
+});
+
+loadDir("");
+</script>
+</body>
+</html>

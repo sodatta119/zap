@@ -1,0 +1,6 @@
+/target
+/dist
+
+# macOS / IDE junk
+.DS_Store
+android/.idea/
