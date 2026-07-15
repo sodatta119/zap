@@ -28,12 +28,12 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([440.0, 600.0])
         .with_min_inner_size([400.0, 500.0])
-        .with_title("zap");
+        .with_title("Zap");
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("zap", options, Box::new(|_cc| Ok(Box::<ZapApp>::default())))
+    eframe::run_native("Zap", options, Box::new(|_cc| Ok(Box::<ZapApp>::default())))
 }
 
 /// Layer our accent + spacing + rounding on top of egui's current (system
@@ -296,7 +296,7 @@ impl eframe::App for ZapApp {
                     ui.label(RichText::new("⚡").size(26.0).color(ACCENT));
                     ui.add_space(4.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("zap").size(23.0).strong());
+                        ui.label(RichText::new("Zap").size(23.0).strong());
                         ui.label(RichText::new("Lightning-fast file transfer over Wi-Fi").size(12.5).weak());
                     });
                 });

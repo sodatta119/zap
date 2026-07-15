@@ -31,7 +31,7 @@
                 android:background="@drawable/logo_tile"
                 android:padding="9dp"
                 android:src="@drawable/ic_launcher_foreground"
-                android:contentDescription="zap" />
+                android:contentDescription="Zap" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -42,7 +42,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="zap"
+                    android:text="Zap"
                     android:textColor="#F2F2F2"
                     android:textSize="24sp"
                     android:textStyle="bold" />

@@ -141,7 +141,7 @@ fn resolve_device(transport: &dyn Transport, requested: Option<&str>) -> Result<
 /// the URL, and a scannable QR code. This is CLI presentation — the core server
 /// stays free of terminal concerns.
 fn print_banner(info: &ServerInfo) {
-    println!("⚡ zap — sharing {}", info.dir.display());
+    println!("⚡ Zap — sharing {}", info.dir.display());
     println!();
     match info.lan_ip {
         Some(ip) => {
