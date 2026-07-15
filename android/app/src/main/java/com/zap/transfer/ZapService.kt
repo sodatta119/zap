@@ -45,7 +45,7 @@ class ZapService : Service() {
 
         createChannel()
         startAsForeground(buildNotification(url))
-        ZapState.update(url, handle != 0L)
+        ZapState.update(url, handle != 0L, handle)
     }
 
     private fun startAsForeground(notification: Notification) {
@@ -80,7 +80,7 @@ class ZapService : Service() {
             NativeBridge.nativeStop(handle)
             handle = 0L
         }
-        ZapState.update(null, false)
+        ZapState.update(null, false, 0L)
         super.onDestroy()
     }
 

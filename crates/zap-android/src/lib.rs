@@ -28,14 +28,14 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
-use zap_core::web::{self, Credentials, ServeConfig, ServerHandle, ServerInfo};
+use zap_core::web::{self, Credentials, Direction, ServeConfig, ServerHandle, ServerInfo};
 
 /// Owns a running server plus its connection details, boxed and handed to Kotlin
 /// as an opaque `jlong` handle.
 struct Running {
     info: ServerInfo,
     // Kept alive for the server's lifetime; dropping it stops the server.
-    _handle: ServerHandle,
+    handle: ServerHandle,
 }
 
 /// Read a Java string that may be null or empty, returning `None` in those cases.
@@ -89,7 +89,7 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeStart<'local>(
         Ok((info, handle)) => {
             let running = Box::new(Running {
                 info,
-                _handle: handle,
+                handle,
             });
             Box::into_raw(running) as jlong
         }
@@ -113,6 +113,72 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeUrl<'local>(
         Ok(s) => s.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// Return recent transfers as a JSON array, or "[]" for an invalid handle.
+/// Each item: `{"id","name","dir":"up"|"down","done","total"|null,"finished","ok"}`.
+#[no_mangle]
+pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeTransfers<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jstring {
+    let json = if handle == 0 {
+        "[]".to_string()
+    } else {
+        // Safety: `handle` is a pointer produced by `nativeStart` and not yet freed.
+        let running = unsafe { &*(handle as *const Running) };
+        transfers_json(&running.handle.transfers())
+    };
+    match env.new_string(json) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+fn transfers_json(items: &[zap_core::web::TransferInfo]) -> String {
+    let mut s = String::from("[");
+    for (i, t) in items.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        let dir = match t.direction {
+            Direction::Upload => "up",
+            Direction::Download => "down",
+        };
+        let total = t.total.map(|n| n.to_string()).unwrap_or_else(|| "null".to_string());
+        s.push_str(&format!(
+            "{{\"id\":{},\"name\":{},\"dir\":\"{}\",\"done\":{},\"total\":{},\"finished\":{},\"ok\":{}}}",
+            t.id,
+            json_string(&t.name),
+            dir,
+            t.done,
+            total,
+            t.finished,
+            t.ok
+        ));
+    }
+    s.push(']');
+    s
+}
+
+/// Minimal JSON string escaping (quotes + backslash + control chars).
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Stop the server and free the handle. Safe to call with 0 (no-op).

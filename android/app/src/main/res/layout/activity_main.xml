@@ -56,6 +56,44 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- Tabs -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="14dp">
+
+            <Button
+                android:id="@+id/tabShare"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@android:color/transparent"
+                android:minWidth="0dp"
+                android:paddingHorizontal="6dp"
+                android:textAllCaps="false"
+                android:textSize="15sp"
+                android:text="Share" />
+
+            <Button
+                android:id="@+id/tabTransfers"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:background="@android:color/transparent"
+                android:minWidth="0dp"
+                android:paddingHorizontal="6dp"
+                android:textAllCaps="false"
+                android:textSize="15sp"
+                android:text="Transfers" />
+        </LinearLayout>
+
+        <!-- Share view (status + settings + folder) -->
+        <LinearLayout
+            android:id="@+id/shareView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
         <!-- Status card -->
         <LinearLayout
             android:id="@+id/statusCard"
@@ -264,12 +302,13 @@
                     android:textSize="14sp"
                     android:text="Whole phone storage" />
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/changeFolder"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="10dp"
                     android:background="@drawable/btn_outline"
+                    android:backgroundTint="@null"
                     android:paddingHorizontal="16dp"
                     android:minWidth="0dp"
                     android:minHeight="0dp"
@@ -279,24 +318,36 @@
                     android:text="Change" />
             </LinearLayout>
         </LinearLayout>
+        </LinearLayout>
+        <!-- /shareView -->
 
-        <Button
+        <!-- Transfers view (populated at runtime) -->
+        <LinearLayout
+            android:id="@+id/transfersView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone" />
+
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/startButton"
             android:layout_width="match_parent"
             android:layout_height="52dp"
             android:background="@drawable/btn_primary"
+            android:backgroundTint="@null"
             android:textAllCaps="false"
             android:textColor="#1A1A1A"
             android:textSize="16sp"
             android:textStyle="bold"
             android:text="Start server" />
 
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/stopButton"
             android:layout_width="match_parent"
             android:layout_height="52dp"
             android:layout_marginTop="10dp"
             android:background="@drawable/btn_outline"
+            android:backgroundTint="@null"
             android:enabled="false"
             android:textAllCaps="false"
             android:textColor="#F2F2F2"

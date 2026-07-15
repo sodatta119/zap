@@ -22,6 +22,9 @@ object NativeBridge {
     /** The URL another device on the same Wi-Fi should open, or null. */
     external fun nativeUrl(handle: Long): String?
 
+    /** Recent transfers as a JSON array string (see Rust doc). "[]" if none. */
+    external fun nativeTransfers(handle: Long): String?
+
     /** Stop the server and release the handle. Safe to call with 0. */
     external fun nativeStop(handle: Long)
 }
@@ -40,12 +43,18 @@ object ZapState {
     var running: Boolean = false
         private set
 
+    /** Native handle of the running server (0 when stopped) — for polling transfers. */
+    @Volatile
+    var handle: Long = 0
+        private set
+
     /** Set by the activity to be notified when [update] is called. */
     var onChange: (() -> Unit)? = null
 
-    fun update(url: String?, running: Boolean) {
+    fun update(url: String?, running: Boolean, handle: Long) {
         this.url = url
         this.running = running
+        this.handle = handle
         onChange?.invoke()
     }
 }

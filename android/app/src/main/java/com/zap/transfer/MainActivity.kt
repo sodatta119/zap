@@ -6,17 +6,24 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -40,6 +47,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var credBox: View
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
+    private lateinit var tabShare: Button
+    private lateinit var tabTransfers: Button
+    private lateinit var shareView: View
+    private lateinit var transfersView: ViewGroup
+
+    private var transfersTab = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var polling = false
+    private data class Sample(var t: Long, var done: Long, var speed: Double)
+    private val speeds = HashMap<Long, Sample>()
+    private data class Xfer(val id: Long, val name: String, val dir: String, val done: Long, val total: Long?, val finished: Boolean, val ok: Boolean)
+
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            refreshTransfers()
+            if (polling) handler.postDelayed(this, 500)
+        }
+    }
 
     private val prefs by lazy { getSharedPreferences("zap", Context.MODE_PRIVATE) }
     private val storageRoot: String get() = Environment.getExternalStorageDirectory().absolutePath
@@ -82,6 +107,13 @@ class MainActivity : AppCompatActivity() {
         credBox = findViewById(R.id.credBox)
         userInput = findViewById(R.id.userInput)
         passInput = findViewById(R.id.passInput)
+        tabShare = findViewById(R.id.tabShare)
+        tabTransfers = findViewById(R.id.tabTransfers)
+        shareView = findViewById(R.id.shareView)
+        transfersView = findViewById(R.id.transfersView)
+        tabShare.setOnClickListener { transfersTab = false; render() }
+        tabTransfers.setOnClickListener { transfersTab = true; render() }
+        if (intent?.getStringExtra("zap_tab") == "transfers") transfersTab = true
 
         // Restore saved security settings.
         secureSwitch.isChecked = prefs.getBoolean(KEY_SECURE, false)
@@ -114,6 +146,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         persistCredentials()
+        stopPolling()
         super.onPause()
     }
 
@@ -147,6 +180,122 @@ class MainActivity : AppCompatActivity() {
         // Config can only change while stopped.
         setConfigEnabled(!running)
         folderPath.text = folderLabel(currentFolder())
+
+        // Tabs
+        shareView.visibility = if (transfersTab) View.GONE else View.VISIBLE
+        transfersView.visibility = if (transfersTab) View.VISIBLE else View.GONE
+        val accent = 0xFFF5A623.toInt(); val muted = 0xFF8A8A90.toInt()
+        tabShare.setTextColor(if (transfersTab) muted else accent)
+        tabShare.setTypeface(null, if (transfersTab) Typeface.NORMAL else Typeface.BOLD)
+        tabTransfers.setTextColor(if (transfersTab) accent else muted)
+        tabTransfers.setTypeface(null, if (transfersTab) Typeface.BOLD else Typeface.NORMAL)
+        if (transfersTab) startPolling() else stopPolling()
+    }
+
+    // ---- Transfers tab ----
+
+    private fun startPolling() {
+        if (!polling) {
+            polling = true
+            handler.post(pollRunnable)
+        }
+    }
+
+    private fun stopPolling() {
+        polling = false
+        handler.removeCallbacks(pollRunnable)
+    }
+
+    private fun refreshTransfers() {
+        transfersView.removeAllViews()
+        val running = ZapState.running
+        val list = if (running) parseTransfers(NativeBridge.nativeTransfers(ZapState.handle)) else emptyList()
+
+        if (list.isEmpty()) {
+            val tv = TextView(this).apply {
+                text = if (running) "No transfers yet — send or grab a file from another device."
+                else "Start the server to see transfers here."
+                setTextColor(0xFF8A8A90.toInt())
+                textSize = 13f
+                setPadding(6, 12, 6, 12)
+            }
+            transfersView.addView(tv)
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        for (t in list) {
+            val s = speeds.getOrPut(t.id) { Sample(now, t.done, 0.0) }
+            val dt = (now - s.t) / 1000.0
+            if (dt >= 0.35) {
+                val inst = (t.done - s.done) / dt
+                s.speed = s.speed * 0.4 + inst * 0.6
+                s.t = now; s.done = t.done
+            }
+            val speed = if (t.finished) 0.0 else s.speed
+
+            val row = layoutInflater.inflate(R.layout.transfer_row, transfersView, false)
+            val incoming = t.dir == "up"
+            row.findViewById<TextView>(R.id.arrow).text = if (incoming) "⬇" else "⬆"
+            row.findViewById<TextView>(R.id.name).text = t.name
+            val dirTxt = if (incoming) "Incoming" else "Outgoing"
+            row.findViewById<TextView>(R.id.sub).text =
+                if (t.total != null && t.total > 0) {
+                    val pct = (t.done.toDouble() / t.total * 100).coerceAtMost(100.0).toInt()
+                    "$dirTxt · ${humanBytes(t.done)} / ${humanBytes(t.total)} ($pct%)"
+                } else {
+                    "$dirTxt · ${humanBytes(t.done)}"
+                }
+            val rate = row.findViewById<TextView>(R.id.rate)
+            if (t.finished) {
+                rate.text = if (t.ok) "done" else "failed"
+                rate.setTextColor(if (t.ok) 0xFF2E9E57.toInt() else 0xFFE0554B.toInt())
+            } else {
+                rate.text = humanBytes(speed.toLong()) + "/s"
+                rate.setTextColor(0xFFF5A623.toInt())
+            }
+            val pb = row.findViewById<ProgressBar>(R.id.progress)
+            if (t.total != null && t.total > 0 && !t.finished) {
+                pb.visibility = View.VISIBLE
+                pb.progress = ((t.done.toDouble() / t.total) * 1000).toInt()
+            } else {
+                pb.visibility = View.GONE
+            }
+            transfersView.addView(row)
+        }
+        speeds.keys.retainAll(list.map { it.id }.toSet())
+    }
+
+    private fun parseTransfers(json: String?): List<Xfer> {
+        if (json.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            val out = ArrayList<Xfer>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(
+                    Xfer(
+                        id = o.getLong("id"),
+                        name = o.getString("name"),
+                        dir = o.getString("dir"),
+                        done = o.getLong("done"),
+                        total = if (o.isNull("total")) null else o.getLong("total"),
+                        finished = o.getBoolean("finished"),
+                        ok = o.getBoolean("ok"),
+                    )
+                )
+            }
+            out.reversed() // newest first
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun humanBytes(n: Long): String {
+        val u = arrayOf("B", "KB", "MB", "GB", "TB")
+        var v = n.toDouble(); var i = 0
+        while (v >= 1024 && i < u.size - 1) { v /= 1024; i++ }
+        return if (i == 0) "$n B" else String.format("%.1f %s", v, u[i])
     }
 
     private fun setConfigEnabled(enabled: Boolean) {
