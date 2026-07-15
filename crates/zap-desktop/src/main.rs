@@ -21,6 +21,7 @@ enum Tab {
 const ACCENT: Color32 = Color32::from_rgb(0xD9, 0x8A, 0x1E); // amber — reads on light & dark
 const ACCENT_BTN: Color32 = Color32::from_rgb(0xE0, 0x93, 0x22); // primary button fill
 const WARN: Color32 = Color32::from_rgb(0xC7, 0x3B, 0x2E);
+const OK: Color32 = Color32::from_rgb(0x2E, 0x9E, 0x57); // green — "reachable" confirmation
 const BG: Color32 = Color32::from_rgb(0xF7, 0xF6, 0xF3); // window / panel background
 
 fn main() -> eframe::Result<()> {
@@ -81,6 +82,19 @@ struct Running {
     info: ServerInfo,
     handle: ServerHandle,
     qr: Option<egui::TextureHandle>,
+    started: Instant,
+}
+
+/// How long to wait for a first client before warning that nothing can connect.
+const NO_CLIENT_WARN_SECS: u64 = 20;
+
+/// The grace period, with a gated env override (`ZAP_NO_CLIENT_SECS`) so the
+/// "no device connected" warning can be screenshotted without a 20s wait.
+fn no_client_warn_secs() -> u64 {
+    std::env::var("ZAP_NO_CLIENT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(NO_CLIENT_WARN_SECS)
 }
 
 struct ZapApp {
@@ -137,7 +151,7 @@ impl ZapApp {
         match web::spawn(config) {
             Ok((info, handle)) => {
                 let qr = qr_texture(ctx, &info.url());
-                self.running = Some(Running { info, handle, qr });
+                self.running = Some(Running { info, handle, qr, started: Instant::now() });
                 self.speed = 0.0;
                 self.sample = None;
             }
@@ -197,11 +211,11 @@ impl ZapApp {
         if rows.is_empty() && std::env::var("ZAP_SHOT_DEMO").is_ok() {
             return vec![
                 (
-                    TransferInfo { id: 2, name: "IMG_2231.mov".into(), direction: Direction::Upload, done: 734_003_200, total: Some(1_610_612_736), finished: false, ok: false, elapsed_secs: 12.0 },
+                    TransferInfo { id: 2, name: "IMG_2231.mov".into(), direction: Direction::Upload, done: 734_003_200, total: Some(1_610_612_736), finished: false, ok: false, verified: false, elapsed_secs: 12.0 },
                     28_311_552.0,
                 ),
                 (
-                    TransferInfo { id: 1, name: "Q3-report.pdf".into(), direction: Direction::Download, done: 2_411_724, total: Some(2_411_724), finished: true, ok: true, elapsed_secs: 1.0 },
+                    TransferInfo { id: 1, name: "Q3-report.pdf".into(), direction: Direction::Download, done: 2_411_724, total: Some(2_411_724), finished: true, ok: true, verified: true, elapsed_secs: 1.0 },
                     0.0,
                 ),
             ];
@@ -330,9 +344,14 @@ impl eframe::App for ZapApp {
 impl ZapApp {
     fn status_running(&self, ui: &mut egui::Ui, r: &Running) {
         card(ui, |ui| {
-            ui.label(RichText::new("● Server running").size(15.0).strong().color(ACCENT));
+            let reachable = r.info.lan_ip.is_some();
+            if reachable {
+                ui.label(RichText::new("REACHABLE AT").size(12.0).strong().color(OK));
+            } else {
+                ui.label(RichText::new("● Server running").size(15.0).strong().color(ACCENT));
+            }
             ui.add_space(8.0);
-            if r.info.lan_ip.is_none() {
+            if !reachable {
                 ui.label(
                     RichText::new("⚠ No Wi-Fi detected — connect to Wi-Fi, then Stop and Start again.")
                         .size(12.5)
@@ -342,13 +361,44 @@ impl ZapApp {
             }
             let url = r.info.url();
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&url).monospace().size(15.0));
+                ui.label(RichText::new(&url).monospace().size(17.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Copy").clicked() {
                         ui.output_mut(|o| o.copied_text = url.clone());
                     }
                 });
             });
+            if reachable {
+                ui.add_space(3.0);
+                ui.label(RichText::new("Open this on the other device (same Wi-Fi).").size(11.5).weak());
+            }
+
+            // Watchdog: reachable, but no device has connected after a grace
+            // period → the likely cause is AP/client isolation or a wrong network.
+            if reachable
+                && r.handle.requests_seen() == 0
+                && r.started.elapsed().as_secs() >= no_client_warn_secs()
+            {
+                ui.add_space(10.0);
+                egui::Frame::none()
+                    .fill(WARN.gamma_multiply(0.12))
+                    .rounding(10.0)
+                    .inner_margin(Margin::same(12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("⚠ No device has connected yet").size(13.0).strong().color(WARN));
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(
+                                "If the other device can't open the link:\n\
+                                 • make sure both are on the same Wi-Fi\n\
+                                 • turn off your router's \u{201C}AP / client isolation\u{201D}\n\
+                                 • a guest network often blocks this — use the main one",
+                            )
+                            .size(12.0),
+                        );
+                    });
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let active = self.speed > 1.0;
@@ -468,7 +518,8 @@ fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if t.finished {
                         let (txt, col) = if t.ok {
-                            ("done", Color32::from_rgb(0x2E, 0x9E, 0x57))
+                            let label = if t.verified { "verified" } else { "done" };
+                            (label, Color32::from_rgb(0x2E, 0x9E, 0x57))
                         } else {
                             ("failed", WARN)
                         };

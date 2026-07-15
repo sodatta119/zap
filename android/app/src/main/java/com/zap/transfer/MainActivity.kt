@@ -39,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var copiedLabel: TextView
     private lateinit var urlActions: View
     private lateinit var hint: TextView
+    private lateinit var isolationWarn: View
     private lateinit var folderPath: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
@@ -57,12 +58,23 @@ class MainActivity : AppCompatActivity() {
     private var polling = false
     private data class Sample(var t: Long, var done: Long, var speed: Double)
     private val speeds = HashMap<Long, Sample>()
-    private data class Xfer(val id: Long, val name: String, val dir: String, val done: Long, val total: Long?, val finished: Boolean, val ok: Boolean)
+    private data class Xfer(val id: Long, val name: String, val dir: String, val done: Long, val total: Long?, val finished: Boolean, val ok: Boolean, val verified: Boolean)
 
     private val pollRunnable = object : Runnable {
         override fun run() {
             refreshTransfers()
             if (polling) handler.postDelayed(this, 500)
+        }
+    }
+
+    // Watchdog: if the server is reachable but no device connects within the
+    // grace period, the likely cause is AP/client isolation or a wrong network.
+    private var serverStartedAt = 0L
+    private var isoWatching = false
+    private val isolationRunnable = object : Runnable {
+        override fun run() {
+            updateIsolationHint()
+            if (isoWatching) handler.postDelayed(this, 2000)
         }
     }
 
@@ -99,6 +111,7 @@ class MainActivity : AppCompatActivity() {
         copiedLabel = findViewById(R.id.copiedLabel)
         urlActions = findViewById(R.id.urlActions)
         hint = findViewById(R.id.hint)
+        isolationWarn = findViewById(R.id.isolationWarn)
         folderPath = findViewById(R.id.folderPath)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
@@ -147,6 +160,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         persistCredentials()
         stopPolling()
+        stopIsolationWatch()
         super.onPause()
     }
 
@@ -162,15 +176,34 @@ class MainActivity : AppCompatActivity() {
         val url = ZapState.url
         // A localhost URL means no Wi-Fi/LAN IP was found — warn instead.
         val noWifi = running && (url == null || url.contains("localhost") || url.contains("127.0.0.1"))
-        status.text = if (running) "Server running" else "Stopped"
+        val reachable = running && !noWifi
+        status.text = when {
+            !running -> "Stopped"
+            reachable -> "✓ Reachable at"
+            else -> "Server running"
+        }
+        status.setTextColor(if (reachable) 0xFF2E9E57.toInt() else 0xFFF2F2F2.toInt())
+        status.textSize = if (reachable) 14f else 18f
         urlView.text = when {
             !running -> "Start to share over Wi-Fi"
             noWifi -> "No Wi-Fi detected — connect to Wi-Fi, then Stop and Start again"
             else -> url ?: "…"
         }
-        urlView.setTextColor(if (noWifi) 0xFFE0554B.toInt() else 0xFF8A8A90.toInt())
+        urlView.setTextColor(if (noWifi) 0xFFE0554B.toInt() else if (reachable) 0xFFF2F2F2.toInt() else 0xFF8A8A90.toInt())
+        urlView.textSize = if (reachable) 17f else 15f
+        urlView.setTypeface(null, if (reachable) Typeface.BOLD else Typeface.NORMAL)
         urlActions.visibility = if (running && !noWifi) View.VISIBLE else View.GONE
         hint.visibility = if (running && !noWifi) View.VISIBLE else View.GONE
+
+        // Watchdog lifecycle: run only while reachable, reset the clock on start.
+        if (reachable) {
+            if (serverStartedAt == 0L) serverStartedAt = SystemClock.elapsedRealtime()
+            startIsolationWatch()
+        } else {
+            serverStartedAt = 0L
+            stopIsolationWatch()
+            isolationWarn.visibility = View.GONE
+        }
 
         startButton.isEnabled = !running
         stopButton.isEnabled = running
@@ -190,6 +223,29 @@ class MainActivity : AppCompatActivity() {
         tabTransfers.setTextColor(if (transfersTab) accent else muted)
         tabTransfers.setTypeface(null, if (transfersTab) Typeface.BOLD else Typeface.NORMAL)
         if (transfersTab) startPolling() else stopPolling()
+    }
+
+    // ---- AP/client-isolation watchdog ----
+
+    private fun startIsolationWatch() {
+        if (!isoWatching) {
+            isoWatching = true
+            handler.post(isolationRunnable)
+        }
+    }
+
+    private fun stopIsolationWatch() {
+        isoWatching = false
+        handler.removeCallbacks(isolationRunnable)
+    }
+
+    /** Show the isolation hint once the grace period passes with zero requests. */
+    private fun updateIsolationHint() {
+        val running = ZapState.running
+        val requests = if (running) NativeBridge.nativeRequests(ZapState.handle) else 0L
+        val waited = if (serverStartedAt == 0L) 0L else SystemClock.elapsedRealtime() - serverStartedAt
+        val show = running && serverStartedAt != 0L && requests == 0L && waited >= NO_CLIENT_WARN_MS
+        isolationWarn.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     // ---- Transfers tab ----
@@ -248,7 +304,7 @@ class MainActivity : AppCompatActivity() {
                 }
             val rate = row.findViewById<TextView>(R.id.rate)
             if (t.finished) {
-                rate.text = if (t.ok) "done" else "failed"
+                rate.text = if (t.ok) (if (t.verified) "✓ verified" else "done") else "failed"
                 rate.setTextColor(if (t.ok) 0xFF2E9E57.toInt() else 0xFFE0554B.toInt())
             } else {
                 rate.text = humanBytes(speed.toLong()) + "/s"
@@ -282,6 +338,7 @@ class MainActivity : AppCompatActivity() {
                         total = if (o.isNull("total")) null else o.getLong("total"),
                         finished = o.getBoolean("finished"),
                         ok = o.getBoolean("ok"),
+                        verified = o.optBoolean("verified", false),
                     )
                 )
             }
@@ -419,6 +476,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Grace period before warning that no device has connected (ms). */
+        private const val NO_CLIENT_WARN_MS = 20_000L
         private const val DEFAULT_CRED = "zap"
         private const val KEY_FOLDER = "folder"
         private const val KEY_ASKED_FILES = "asked_files"

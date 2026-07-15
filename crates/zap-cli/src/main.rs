@@ -144,9 +144,12 @@ fn print_banner(info: &ServerInfo) {
     println!("⚡ zap — sharing {}", info.dir.display());
     println!();
     match info.lan_ip {
-        Some(_) => {
+        Some(ip) => {
             let url = info.url();
-            println!("On your phone (same Wi-Fi), open:  {url}");
+            println!("✓ Reachable at  {url}");
+            println!("  (this device: {ip}, port {})", info.port);
+            println!();
+            println!("Open that URL on the other device (same Wi-Fi):");
             if let Some(qr) = render_qr(&url) {
                 println!("\n{qr}");
             }

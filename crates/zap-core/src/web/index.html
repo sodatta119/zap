@@ -114,6 +114,19 @@
   .tag { font-size: 11.5px; min-width: 46px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
   .tag.done { color: #2e9e57; } .tag.err { color: #e0554b; }
   .rate { font-size: 11px; min-width: 62px; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .pause {
+    flex: none; cursor: pointer; padding: 0; width: 30px; height: 30px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--accent); background: none;
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 50%;
+  }
+  .pause svg { width: 15px; height: 15px; fill: currentColor; display: block; }
+  .pause:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .pause:active { transform: scale(.92); }
+  .pause[hidden] { display: none; }
+  .linkbtn { font: inherit; font-size: 12.5px; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+  #uploads .sub { flex: none; font-size: 11px; color: var(--muted-fg); min-width: 0; }
+  #uploads .name .folder { color: var(--accent); }
 
   /* Breadcrumb */
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; font-size: 13px; min-width: 0; }
@@ -159,7 +172,24 @@
   .row .label .path { display: block; font-size: 11px; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row .meta { font-size: 11.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
   .row .chev { color: var(--muted-fg); font-size: 13px; opacity: .6; }
+  .row .dlzip {
+    flex: none; display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; padding: 0; cursor: pointer;
+    color: var(--muted-fg); background: none; border: none; border-radius: 8px;
+  }
+  .row .dlzip:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .row .dlzip svg { display: block; }
   .empty, .loading { padding: 30px 16px; text-align: center; color: var(--muted-fg); font-size: 13.5px; }
+  .unreachable { padding: 26px 20px; text-align: center; color: var(--muted-fg); font-size: 13.5px; }
+  .unreachable .big { font-size: 14.5px; font-weight: 650; color: var(--fg); margin-bottom: 6px; }
+  .unreachable .big::before { content: "⚠ "; color: var(--accent); }
+  .unreachable ul { list-style: none; margin: 8px 0 14px; padding: 0; line-height: 1.55; }
+  .unreachable .retry {
+    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; color: #fff;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    border: none; border-radius: 8px; padding: 8px 18px;
+  }
+  .unreachable .retry:active { transform: scale(.97); }
   .spinner {
     display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 8px;
     border: 2px solid color-mix(in srgb, var(--fg) 20%, transparent);
@@ -183,8 +213,9 @@
     <div class="body">
       <label id="drop">
         <input type="file" id="file" multiple>
+        <input type="file" id="folder" webkitdirectory>
         <div class="big"><b>Tap to choose files</b> or drop them here</div>
-        <div class="hint">Uploads into <code id="uploadTarget">this folder</code></div>
+        <div class="hint">Uploads into <code id="uploadTarget">this folder</code> · <button type="button" id="pickFolder" class="linkbtn">send a whole folder</button></div>
       </label>
       <ul id="uploads"></ul>
     </div>
@@ -217,12 +248,16 @@ function parentDir(path) { const i = path.lastIndexOf("/"); return i < 0 ? "" : 
 
 const FOLDER_SVG = `<svg viewBox="0 0 24 24" width="21" height="21"><path fill="#f5b301" d="M10 4H4c-1.1 0-1.99 0.9 -1.99 2L2 18c0 1.1 0.9 2 2 2h16c1.1 0 2-0.9 2-2V8c0-1.1-0.9-2-2-2h-8l-2-2z"/></svg>`;
 const FILE_SVG = `<svg viewBox="0 0 24 24" width="19" height="19"><path fill="#9aa0a6" d="M14 2H6c-1.1 0-2 0.9-2 2v16c0 1.1 0.9 2 2 2h12c1.1 0 2-0.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>`;
+const DLZIP_SVG = `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>`;
 
 async function loadDir(path) {
   const listEl = $("#list");
   listEl.innerHTML = '<li class="loading"><span class="spinner"></span>Loading…</li>';
+  let reached = false;
   try {
     const res = await fetch("/api/list?path=" + encodeURIComponent(path));
+    reached = true; // the host answered — any error below is folder-level, not connectivity
+    if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     currentPath = data.path || "";
@@ -230,8 +265,33 @@ async function loadDir(path) {
     renderList(data.entries || []);
     $("#uploadTarget").textContent = currentPath ? "/" + currentPath : "the home folder";
   } catch (e) {
-    listEl.innerHTML = '<li class="empty">Could not open this folder.</li>';
+    if (reached) {
+      listEl.innerHTML = '<li class="empty">Could not open this folder.</li>';
+    } else {
+      // The request never reached the host — a connectivity problem, not a bad folder.
+      showUnreachable(path);
+    }
   }
+}
+
+// Shown when a request can't reach the host at all. On a home router the usual
+// cause is the two devices not being on the same Wi-Fi, or the router's
+// "AP / client isolation" blocking device-to-device traffic.
+function showUnreachable(path) {
+  const listEl = $("#list");
+  const li = document.createElement("li");
+  li.className = "unreachable";
+  li.innerHTML =
+    '<div class="big">Can\'t reach this device</div>' +
+    "<ul>" +
+      "<li>Both devices must be on the <b>same Wi-Fi</b>.</li>" +
+      "<li>Turn off your router's <b>AP / client isolation</b>.</li>" +
+      "<li>Make sure the host hasn't stopped sharing.</li>" +
+    "</ul>" +
+    '<button class="retry">Try again</button>';
+  li.querySelector(".retry").onclick = () => loadDir(path);
+  listEl.innerHTML = "";
+  listEl.appendChild(li);
 }
 
 function renderCrumbs(path) {
@@ -268,8 +328,12 @@ function renderList(entries) {
     el.className = "row";
     el.style.animationDelay = Math.min(i * 28, 400) + "ms"; // staggered reveal
     if (e.dir) {
-      el.innerHTML = `<span class="ico">${FOLDER_SVG}</span><span class="label"></span><span class="chev">›</span>`;
+      el.innerHTML = `<span class="ico">${FOLDER_SVG}</span><span class="label"></span><button class="dlzip" title="Download as zip" aria-label="Download folder as zip">${DLZIP_SVG}</button><span class="chev">›</span>`;
       el.onclick = () => loadDir(joinPath(currentPath, e.name));
+      el.querySelector(".dlzip").onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        downloadFolderZip(joinPath(currentPath, e.name));
+      };
     } else {
       el.href = "/download?path=" + encodeURIComponent(joinPath(currentPath, e.name));
       el.setAttribute("download", e.name);
@@ -279,6 +343,16 @@ function renderList(entries) {
     li.appendChild(el);
     listEl.appendChild(li);
   });
+}
+
+// Trigger a browser download of a folder as a streamed .zip.
+function downloadFolderZip(path) {
+  const a = document.createElement("a");
+  a.href = "/download-folder?path=" + encodeURIComponent(path);
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // ---- Search across the whole shared folder ----
@@ -346,50 +420,309 @@ function exitSearch() {
   loadDir(currentPath);
 }
 
-// ---- Upload into the current folder ----
-const drop = $("#drop"), fileInput = $("#file"), uploads = $("#uploads");
+// ---- Upload into the current folder (files or whole folders) ----
+const drop = $("#drop"), fileInput = $("#file"), folderInput = $("#folder"), uploads = $("#uploads");
 ["dragenter", "dragover"].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", e => uploadFiles(e.dataTransfer.files));
+drop.addEventListener("drop", onDrop);
 fileInput.addEventListener("change", () => { uploadFiles(fileInput.files); fileInput.value = ""; });
+folderInput.addEventListener("change", () => {
+  const es = entriesFromInput(folderInput.files);
+  if (es.length) uploadFolderEntries(es);
+  folderInput.value = "";
+});
+$("#pickFolder").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); folderInput.click(); });
 
 function uploadFiles(list) { for (const f of list) uploadOne(f); }
 
-function uploadOne(file) {
-  const li = document.createElement("li");
-  li.innerHTML = `<span class="name"></span><div class="bar"><i></i></div><span class="rate"></span><span class="tag">0%</span>`;
-  li.querySelector(".name").textContent = file.name;
-  uploads.prepend(li);
-  const bar = li.querySelector(".bar > i"), tag = li.querySelector(".tag"), rate = li.querySelector(".rate");
+// Folder picked via the directory input: each File carries its webkitRelativePath.
+function entriesFromInput(fileList) {
+  return [...fileList].map((f) => ({ file: f, relPath: f.webkitRelativePath || f.name }));
+}
 
-  let lastT = performance.now(), lastLoaded = 0, speed = 0;
-  const xhr = new XMLHttpRequest();
-  const url = "/upload?path=" + encodeURIComponent(currentPath) + "&name=" + encodeURIComponent(file.name);
-  xhr.open("PUT", url);
-  xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
-    const pct = Math.round((e.loaded / e.total) * 100);
-    bar.style.width = pct + "%"; tag.textContent = pct + "%";
-    const now = performance.now(), dt = (now - lastT) / 1000;
-    if (dt >= 0.3) {
-      const inst = (e.loaded - lastLoaded) / dt;
-      speed = speed ? speed * 0.4 + inst * 0.6 : inst;
-      rate.textContent = fmtSize(speed) + "/s";
-      lastT = now; lastLoaded = e.loaded;
+// Drag-drop: if a directory was dropped, walk the tree and upload it as a folder.
+async function onDrop(e) {
+  const items = e.dataTransfer.items;
+  const roots = items ? [...items].map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean) : [];
+  if (!roots.length || !roots.some((r) => r.isDirectory)) { uploadFiles(e.dataTransfer.files); return; }
+  const entries = [];
+  for (const r of roots) await collectEntry(r, "", entries);
+  if (entries.length) uploadFolderEntries(entries);
+}
+
+// Recursively collect {file, relPath} from a dropped FileSystemEntry tree.
+function collectEntry(entry, prefix, out) {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file((f) => { out.push({ file: f, relPath: prefix + entry.name }); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const dirPath = prefix + entry.name + "/";
+      const readBatch = () => reader.readEntries(async (batch) => {
+        if (!batch.length) { resolve(); return; }
+        for (const child of batch) await collectEntry(child, dirPath, out);
+        readBatch(); // readEntries yields in batches — keep going until empty
+      }, () => resolve());
+      readBatch();
+    } else { resolve(); }
+  });
+}
+
+function newCtl() { return { paused: false, waiters: [], xhr: null }; }
+function waitResume(ctl) { return new Promise((r) => ctl.waiters.push(r)); }
+
+// Build an upload row (name + bar + rate + tag + pause icon) and return its handles.
+function makeRow(text) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="name"></span><div class="bar"><i></i></div><span class="rate"></span><span class="tag">0%</span><button class="pause" title="Pause" aria-label="Pause">${PAUSE_ICON}</button>`;
+  li.querySelector(".name").textContent = text;
+  uploads.prepend(li);
+  const ui = { bar: li.querySelector(".bar > i"), tag: li.querySelector(".tag"), rate: li.querySelector(".rate"), lastT: performance.now(), lastDone: 0, speed: 0 };
+  return { li, ui, pauseBtn: li.querySelector(".pause") };
+}
+
+function wirePause(pauseBtn, ctl, ui) {
+  pauseBtn.onclick = () => {
+    if (ctl.paused) {
+      ctl.paused = false;
+      pauseBtn.innerHTML = PAUSE_ICON; pauseBtn.title = pauseBtn.ariaLabel = "Pause";
+      ctl.waiters.splice(0).forEach((r) => r());
+    } else {
+      ctl.paused = true;
+      pauseBtn.innerHTML = PLAY_ICON; pauseBtn.title = pauseBtn.ariaLabel = "Resume";
+      ui.rate.textContent = "";
+      if (ctl.xhr) ctl.xhr.abort();
     }
   };
-  xhr.onload = () => {
-    const ok = xhr.status >= 200 && xhr.status < 300;
-    bar.style.width = "100%";
-    rate.textContent = "";
-    tag.textContent = ok ? "done" : "failed";
-    tag.classList.add(ok ? "done" : "err");
-    if (ok) loadDir(currentPath);
-  };
-  xhr.onerror = () => { rate.textContent = ""; tag.textContent = "error"; tag.classList.add("err"); };
-  xhr.send(file);
+}
+
+// ---- Resumable, integrity-verified upload ----
+// Files stream to the host in chunks. The whole-file CRC-32 is computed as we
+// read, and sent with the final chunk so the host can verify the file arrived
+// intact ("✓ verified"). If the connection drops, we ask the host how many
+// bytes it already has (HEAD → X-Zap-Offset) and resume from there — so a 5 GB
+// transfer survives a Wi-Fi blip instead of starting over.
+const UPLOAD_CHUNK = 8 * 1024 * 1024; // 8 MB
+const MAX_RESUME_ATTEMPTS = 6;
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crcUpdate(crc, bytes) {
+  let c = crc >>> 0;
+  for (let i = 0; i < bytes.length; i++) c = (c >>> 8) ^ CRC_TABLE[(c ^ bytes[i]) & 0xff];
+  return c >>> 0;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const PAUSE_ICON = `<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>`;
+const PLAY_ICON = `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+
+// Single file → its own row.
+async function uploadOne(file) {
+  const { ui, pauseBtn } = makeRow(file.name);
+  const ctl = newCtl();
+  wirePause(pauseBtn, ctl, ui);
+  try {
+    const { verified } = await runFile(
+      file, currentPath, file.name, ctl,
+      (done) => updateProgress(ui, done, file.size),
+      (status) => { ui.rate.textContent = ""; ui.tag.textContent = status; ui.tag.classList.remove("done", "err"); },
+    );
+    markDone(ui, verified);
+  } catch (e) {
+    ui.rate.textContent = "";
+    ui.tag.textContent = (e && e.msg) || "failed";
+    ui.tag.classList.add("err");
+  } finally {
+    pauseBtn.hidden = true;
+  }
+}
+
+// Whole folder → one aggregate row with combined progress + ETA. Each file is
+// still uploaded resumably and crc-verified; subfolders are recreated on the host.
+async function uploadFolderEntries(entries) {
+  const rootName = entries[0].relPath.split("/")[0] || "folder";
+  const totalBytes = entries.reduce((s, e) => s + e.file.size, 0);
+  const label = "📁 " + rootName + " (" + entries.length + (entries.length === 1 ? " file)" : " files)");
+  const { ui, pauseBtn } = makeRow(label);
+  const ctl = newCtl();
+  wirePause(pauseBtn, ctl, ui);
+
+  let base = 0, done = 0, failed = 0;
+  try {
+    for (const { file, relPath } of entries) {
+      const relDir = relPath.split("/").slice(0, -1).join("/");
+      const destDir = relDir ? joinPath(currentPath, relDir) : currentPath;
+      try {
+        await runFile(
+          file, destDir, file.name, ctl,
+          (fileDone) => updateAgg(ui, base + fileDone, totalBytes),
+          (status) => { ui.tag.textContent = status; ui.tag.classList.remove("done", "err"); },
+        );
+        done++;
+      } catch (e) { failed++; }
+      base += file.size;
+      updateAgg(ui, base, totalBytes);
+    }
+    ui.bar.style.width = "100%";
+    ui.rate.textContent = "";
+    ui.tag.textContent = failed ? (done + "/" + entries.length) : ("✓ " + done + (done === 1 ? " file" : " files"));
+    ui.tag.classList.add(failed ? "err" : "done");
+    loadDir(currentPath);
+  } finally {
+    pauseBtn.hidden = true;
+  }
+}
+
+// Drive one file to completion with resume + pause. Reports progress via
+// onProgress(doneBytes) and status text via onStatus(text). Returns {verified}
+// or throws {fatal}. Reused by both single-file and folder uploads.
+async function runFile(file, destDir, name, ctl, onProgress, onStatus) {
+  const total = file.size;
+  let attempt = 0;
+  for (;;) {
+    if (ctl.paused) { onStatus("paused"); await waitResume(ctl); attempt = 0; }
+    try {
+      return await sendFile(file, destDir, name, total, onProgress, ctl);
+    } catch (e) {
+      if (e && e.paused) continue;   // paused mid-chunk → loop back and wait
+      if (e && e.fatal) throw e;     // integrity failure — don't retry
+      if (++attempt > MAX_RESUME_ATTEMPTS) throw { fatal: true, msg: "failed" };
+      onStatus("reconnecting…");
+      await sleep(700 + attempt * 400);
+    }
+  }
+}
+
+// Read the file from 0, feeding every byte into the CRC, but only PUT the bytes
+// the host doesn't already have (from its reported offset). Resumes cleanly even
+// across a page reload because the CRC is recomputed over the whole file.
+async function sendFile(file, destDir, name, total, onProgress, ctl) {
+  let offset = await headOffset(destDir, name); // bytes already on the host
+  let crc = 0xFFFFFFFF >>> 0;
+  let readpos = 0;
+
+  while (readpos < total) {
+    if (ctl.paused) throw { paused: true };
+    const end = Math.min(readpos + UPLOAD_CHUNK, total);
+    const buf = new Uint8Array(await file.slice(readpos, end).arrayBuffer());
+    crc = crcUpdate(crc, buf);
+    if (end > offset) {
+      const skip = Math.max(0, offset - readpos);
+      const toSend = skip > 0 ? buf.subarray(skip) : buf;
+      const putOffset = readpos + skip;
+      const isLast = end === total;
+      const finalCrc = isLast ? ((crc ^ 0xFFFFFFFF) >>> 0) : null;
+      const res = await putChunk(destDir, name, putOffset, toSend, total, finalCrc, onProgress, ctl);
+      if (res.resync !== undefined) throw { transient: true }; // host offset differs → restart
+      offset = putOffset + toSend.length;
+      if (isLast) return { verified: res.verified };
+    }
+    readpos = end;
+  }
+
+  // The host already holds every byte but hasn't finalized (e.g. a prior attempt
+  // dropped just before the last response). Send an empty finalizing PUT.
+  const finalCrc = (crc ^ 0xFFFFFFFF) >>> 0;
+  const res = await putChunk(destDir, name, offset, new Uint8Array(0), total, finalCrc, onProgress, ctl);
+  if (res.resync !== undefined) throw { transient: true };
+  return { verified: res.verified };
+}
+
+function markDone(ui, verified) {
+  ui.bar.style.width = "100%";
+  ui.rate.textContent = "";
+  ui.tag.textContent = verified ? "✓ verified" : "done";
+  ui.tag.classList.remove("err");
+  ui.tag.classList.add("done");
+  loadDir(currentPath);
+}
+
+// Ask the host how many bytes of this file (at destDir) it already has.
+async function headOffset(destDir, name) {
+  try {
+    const res = await fetch("/upload?path=" + encodeURIComponent(destDir) + "&name=" + encodeURIComponent(name), { method: "HEAD" });
+    if (!res.ok) return 0;
+    return parseInt(res.headers.get("X-Zap-Offset") || "0", 10) || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// PUT one chunk at `offset` into destDir. Resolves {verified} on a finalizing
+// chunk, {resync:<offset>} on a 409, or rejects {transient|fatal}. Calls
+// onProgress(doneBytes) as it uploads (XHR gives progress; fetch does not).
+function putChunk(destDir, name, offset, bytes, total, finalCrc, onProgress, ctl) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    ctl.xhr = xhr;
+    const done = (fn, arg) => { ctl.xhr = null; fn(arg); };
+    const url = "/upload?path=" + encodeURIComponent(destDir) + "&name=" + encodeURIComponent(name) + "&offset=" + offset;
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("X-Zap-Total", String(total));
+    if (finalCrc !== null) xhr.setRequestHeader("X-Zap-Crc32", (finalCrc >>> 0).toString(16));
+    xhr.upload.onprogress = (e) => onProgress(offset + e.loaded);
+    xhr.onload = () => {
+      if (xhr.status === 409) { done(resolve, { resync: parseInt(xhr.getResponseHeader("X-Zap-Offset") || "0", 10) || 0 }); return; }
+      if (xhr.status === 422) { done(reject, { fatal: true, msg: "verify failed" }); return; }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        done(resolve, { verified: xhr.getResponseHeader("X-Zap-Verified") === "true" });
+      } else { done(reject, { transient: true }); }
+    };
+    // A user pause calls xhr.abort() → onabort; anything else is a network error.
+    xhr.onabort = () => done(reject, ctl.paused ? { paused: true } : { transient: true });
+    xhr.onerror = () => done(reject, { transient: true });
+    xhr.send(bytes);
+  });
+}
+
+function updateProgress(ui, done, total) {
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 100;
+  ui.bar.style.width = pct + "%";
+  ui.tag.textContent = pct + "%";
+  ui.tag.classList.remove("done", "err");
+  const now = performance.now(), dt = (now - ui.lastT) / 1000;
+  if (dt >= 0.3) {
+    const inst = (done - ui.lastDone) / dt;
+    ui.speed = ui.speed ? ui.speed * 0.4 + inst * 0.6 : inst;
+    if (ui.speed > 0) ui.rate.textContent = fmtSize(ui.speed) + "/s";
+    ui.lastT = now; ui.lastDone = done;
+  }
+}
+
+// Aggregate progress for a whole-folder upload: combined bar + speed + ETA.
+function updateAgg(ui, done, total) {
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 100;
+  ui.bar.style.width = pct + "%";
+  ui.tag.textContent = pct + "%";
+  ui.tag.classList.remove("done", "err");
+  const now = performance.now(), dt = (now - ui.lastT) / 1000;
+  if (dt >= 0.3) {
+    const inst = (done - ui.lastDone) / dt;
+    ui.speed = ui.speed ? ui.speed * 0.4 + inst * 0.6 : inst;
+    ui.lastT = now; ui.lastDone = done;
+    if (ui.speed > 0) {
+      const remain = (total - done) / ui.speed;
+      ui.rate.textContent = fmtSize(ui.speed) + "/s · " + fmtEta(remain);
+    }
+  }
+}
+
+function fmtEta(sec) {
+  if (!isFinite(sec) || sec < 0) return "";
+  sec = Math.round(sec);
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.round(sec / 60) + "m";
+  return Math.floor(sec / 3600) + "h" + Math.round((sec % 3600) / 60) + "m";
 }
 
 const refresh = $("#refresh");

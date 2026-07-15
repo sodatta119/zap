@@ -115,6 +115,23 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeUrl<'local>(
     }
 }
 
+/// Return the number of HTTP requests any client has made since start, or 0 for
+/// an invalid handle. While this stays 0 the UI can warn that no device has been
+/// able to reach the phone (wrong Wi-Fi / AP-client isolation / firewall).
+#[no_mangle]
+pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeRequests(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jlong {
+    if handle == 0 {
+        return 0;
+    }
+    // Safety: `handle` is a pointer produced by `nativeStart` and not yet freed.
+    let running = unsafe { &*(handle as *const Running) };
+    running.handle.requests_seen() as jlong
+}
+
 /// Return recent transfers as a JSON array, or "[]" for an invalid handle.
 /// Each item: `{"id","name","dir":"up"|"down","done","total"|null,"finished","ok"}`.
 #[no_mangle]
@@ -148,14 +165,15 @@ fn transfers_json(items: &[zap_core::web::TransferInfo]) -> String {
         };
         let total = t.total.map(|n| n.to_string()).unwrap_or_else(|| "null".to_string());
         s.push_str(&format!(
-            "{{\"id\":{},\"name\":{},\"dir\":\"{}\",\"done\":{},\"total\":{},\"finished\":{},\"ok\":{}}}",
+            "{{\"id\":{},\"name\":{},\"dir\":\"{}\",\"done\":{},\"total\":{},\"finished\":{},\"ok\":{},\"verified\":{}}}",
             t.id,
             json_string(&t.name),
             dir,
             t.done,
             total,
             t.finished,
-            t.ok
+            t.ok,
+            t.verified
         ));
     }
     s.push(']');

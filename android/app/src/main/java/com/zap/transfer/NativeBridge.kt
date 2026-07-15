@@ -25,6 +25,13 @@ object NativeBridge {
     /** Recent transfers as a JSON array string (see Rust doc). "[]" if none. */
     external fun nativeTransfers(handle: Long): String?
 
+    /**
+     * Number of HTTP requests any client has made since start. While this stays
+     * 0, no device has reached the phone — the UI uses it to warn about wrong
+     * Wi-Fi / AP-client isolation instead of showing a dead link.
+     */
+    external fun nativeRequests(handle: Long): Long
+
     /** Stop the server and release the handle. Safe to call with 0. */
     external fun nativeStop(handle: Long)
 }

@@ -13,6 +13,7 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 tiny_http = "0.12"
+socket2 = "0.5"
 qrcode = "0.14"
 clap = { version = "4", features = ["derive"] }
 jni = "0.21"

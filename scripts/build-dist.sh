@@ -15,17 +15,41 @@ if ! command -v cargo-bundle >/dev/null 2>&1; then
   exit 1
 fi
 
-cargo build --release --package zap-cli
-
 case "$(uname -s)" in
   Darwin)
-    # Run from the crate dir so cargo-bundle finds the icon paths.
+    # Universal (Intel + Apple Silicon): build both arches, then `lipo` them into
+    # one fat binary so a single .dmg runs natively on any Mac. cargo-bundle only
+    # builds one arch, so we bundle for the .app skeleton (icon + Info.plist) and
+    # then swap in the universal binary and repackage the .dmg ourselves.
+    ARM=aarch64-apple-darwin
+    X86=x86_64-apple-darwin
+    for t in "$ARM" "$X86"; do rustup target add "$t" >/dev/null 2>&1 || true; done
+
+    cargo build --release --package zap-cli --package zap-desktop \
+      --target "$ARM" --target "$X86"
+
+    # Universal CLI.
+    lipo -create -output dist/zap-macos-cli \
+      "target/$X86/release/zap" "target/$ARM/release/zap"
+
+    # Bundle the .app, then replace its binary with the universal one.
     ( cd crates/zap-desktop && cargo bundle --release )
-    cp target/release/bundle/dmg/zap.dmg dist/zap-macos.dmg
-    cp target/release/zap dist/zap-macos-cli
-    echo "✅ dist/zap-macos.dmg  +  dist/zap-macos-cli"
+    APP=target/release/bundle/osx/zap.app
+    lipo -create -output "$APP/Contents/MacOS/zap-desktop" \
+      "target/$X86/release/zap-desktop" "target/$ARM/release/zap-desktop"
+
+    # Package a universal .dmg (the .app + an /Applications drop target).
+    STAGE=target/zap-dmg
+    rm -rf "$STAGE"; mkdir -p "$STAGE"
+    cp -R "$APP" "$STAGE/"
+    ln -s /Applications "$STAGE/Applications"
+    rm -f dist/zap-macos.dmg
+    hdiutil create -volname zap -srcfolder "$STAGE" -ov -format UDZO dist/zap-macos.dmg >/dev/null
+    echo "✅ dist/zap-macos.dmg (universal)  +  dist/zap-macos-cli (universal)"
+    lipo -info dist/zap-macos-cli
     ;;
   Linux)
+    cargo build --release --package zap-cli
     ( cd crates/zap-desktop && cargo bundle --release --format deb )
     cp target/release/bundle/deb/*.deb dist/
     cp target/release/zap-desktop dist/zap-linux

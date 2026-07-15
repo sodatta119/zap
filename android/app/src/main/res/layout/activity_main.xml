@@ -180,6 +180,36 @@
                 android:textColor="#8A8A90"
                 android:visibility="gone"
                 android:text="Both devices must be on the same Wi-Fi. If it won't connect, turn off your router's “AP / client isolation”." />
+
+            <!-- Watchdog: shown when the server is reachable but no device has
+                 connected for a while — the classic AP/client-isolation symptom. -->
+            <LinearLayout
+                android:id="@+id/isolationWarn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/warn_bg"
+                android:padding="14dp"
+                android:layout_marginTop="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="⚠ No device has connected yet"
+                    android:textColor="#E0554B"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="#C7C2C2"
+                    android:textSize="12sp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="If the other device can't open the link:\n• make sure both are on the same Wi-Fi\n• turn off your router's “AP / client isolation”\n• a guest network often blocks this — use the main one" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- Secure card -->
