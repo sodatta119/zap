@@ -2,6 +2,7 @@
 // Android app. Remote devices connect via the URL/QR shown here.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -9,7 +10,13 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use egui::{Color32, FontId, Margin, RichText, Rounding, TextStyle};
 use qrcode::QrCode;
-use zap_core::web::{self, Credentials, ServeConfig, ServerHandle, ServerInfo};
+use zap_core::web::{self, Credentials, Direction, ServeConfig, ServerHandle, ServerInfo, TransferInfo};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Share,
+    Transfers,
+}
 
 const ACCENT: Color32 = Color32::from_rgb(0xD9, 0x8A, 0x1E); // amber — reads on light & dark
 const ACCENT_BTN: Color32 = Color32::from_rgb(0xE0, 0x93, 0x22); // primary button fill
@@ -86,6 +93,8 @@ struct ZapApp {
     error: Option<String>,
     speed: f64,
     sample: Option<(Instant, u64)>,
+    tab: Tab,
+    tspeed: HashMap<u64, (Instant, u64, f64)>, // per-transfer: last sample time, bytes, smoothed speed
     shot_frames: u32,
 }
 
@@ -105,6 +114,8 @@ impl Default for ZapApp {
             error: None,
             speed: 0.0,
             sample: None,
+            tab: Tab::Share,
+            tspeed: HashMap::new(),
             shot_frames: 0,
         }
     }
@@ -161,6 +172,42 @@ impl ZapApp {
             None => self.sample = Some((now, bytes)),
         }
     }
+
+    /// Poll per-transfer activity and compute a smoothed speed for each.
+    /// Returns newest-first.
+    fn poll_transfers(&mut self) -> Vec<(TransferInfo, f64)> {
+        let list = self.running.as_ref().map(|r| r.handle.transfers()).unwrap_or_default();
+        let now = Instant::now();
+        let mut rows = Vec::with_capacity(list.len());
+        for t in &list {
+            let e = self.tspeed.entry(t.id).or_insert((now, t.done, 0.0));
+            let dt = now.duration_since(e.0).as_secs_f64();
+            if dt >= 0.35 {
+                let inst = t.done.saturating_sub(e.1) as f64 / dt;
+                e.2 = e.2 * 0.4 + inst * 0.6;
+                e.0 = now;
+                e.1 = t.done;
+            }
+            let speed = if t.finished { 0.0 } else { e.2 };
+            rows.push((t.clone(), speed));
+        }
+        // Drop tracking for transfers no longer in the list.
+        self.tspeed.retain(|id, _| list.iter().any(|t| t.id == *id));
+        rows.reverse(); // newest first
+        if rows.is_empty() && std::env::var("ZAP_SHOT_DEMO").is_ok() {
+            return vec![
+                (
+                    TransferInfo { id: 2, name: "IMG_2231.mov".into(), direction: Direction::Upload, done: 734_003_200, total: Some(1_610_612_736), finished: false, ok: false, elapsed_secs: 12.0 },
+                    28_311_552.0,
+                ),
+                (
+                    TransferInfo { id: 1, name: "Q3-report.pdf".into(), direction: Direction::Download, done: 2_411_724, total: Some(2_411_724), finished: true, ok: true, elapsed_secs: 1.0 },
+                    0.0,
+                ),
+            ];
+        }
+        rows
+    }
 }
 
 impl eframe::App for ZapApp {
@@ -178,6 +225,9 @@ impl eframe::App for ZapApp {
             if self.shot_frames == 1 && std::env::var("ZAP_SHOT_RUNNING").is_ok() && self.running.is_none() {
                 self.start(ctx);
             }
+            if self.shot_frames == 1 && std::env::var("ZAP_SHOT_DEMO").is_ok() {
+                self.tab = Tab::Transfers;
+            }
             if self.shot_frames == 4 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
             }
@@ -193,6 +243,7 @@ impl eframe::App for ZapApp {
         }
 
         self.update_speed(ctx);
+        let transfer_rows = self.poll_transfers();
         let running = self.running.is_some();
 
         // Primary action pinned to the bottom (always reachable).
@@ -233,20 +284,42 @@ impl eframe::App for ZapApp {
                         ui.label(RichText::new("Lightning-fast file transfer over Wi-Fi").size(12.5).weak());
                     });
                 });
-                ui.add_space(16.0);
+                ui.add_space(14.0);
 
-                if let Some(r) = &self.running {
-                    self.status_running(ui, r);
-                } else {
-                    card(ui, |ui| {
-                        ui.label(RichText::new("Stopped").size(15.0).strong());
-                        ui.add_space(3.0);
-                        ui.label(RichText::new("Start to share over Wi-Fi").weak());
-                    });
-                    ui.add_space(12.0);
-                    self.folder_card(ui);
-                    ui.add_space(12.0);
-                    self.settings_card(ui);
+                // Tabs
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(self.tab == Tab::Share, RichText::new("Share").size(14.0)).clicked() {
+                        self.tab = Tab::Share;
+                    }
+                    ui.add_space(4.0);
+                    let tlabel = if transfer_rows.is_empty() {
+                        "Transfers".to_string()
+                    } else {
+                        format!("Transfers ({})", transfer_rows.len())
+                    };
+                    if ui.selectable_label(self.tab == Tab::Transfers, RichText::new(tlabel).size(14.0)).clicked() {
+                        self.tab = Tab::Transfers;
+                    }
+                });
+                ui.add_space(12.0);
+
+                match self.tab {
+                    Tab::Share => {
+                        if let Some(r) = &self.running {
+                            self.status_running(ui, r);
+                        } else {
+                            card(ui, |ui| {
+                                ui.label(RichText::new("Stopped").size(15.0).strong());
+                                ui.add_space(3.0);
+                                ui.label(RichText::new("Start to share over Wi-Fi").weak());
+                            });
+                            ui.add_space(12.0);
+                            self.folder_card(ui);
+                            ui.add_space(12.0);
+                            self.settings_card(ui);
+                        }
+                    }
+                    Tab::Transfers => transfers_view(ui, running, &transfer_rows),
                 }
                 ui.add_space(6.0);
             });
@@ -357,6 +430,75 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) {
             ui.set_width(ui.available_width());
             add(ui);
         });
+}
+
+/// Activity list: one card per transfer with live per-file speed.
+fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]) {
+    if rows.is_empty() {
+        card(ui, |ui| {
+            let msg = if running {
+                "No transfers yet — send or grab a file from another device."
+            } else {
+                "Start the server to see transfers here."
+            };
+            ui.label(RichText::new(msg).weak());
+        });
+        return;
+    }
+    for (t, speed) in rows {
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (arrow, dir_txt) = match t.direction {
+                    Direction::Upload => ("⬇", "Incoming"),
+                    Direction::Download => ("⬆", "Outgoing"),
+                };
+                ui.label(RichText::new(arrow).size(17.0).color(ACCENT));
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&t.name).size(14.0).strong());
+                    let line = match t.total {
+                        Some(tot) if tot > 0 => {
+                            let pct = (t.done as f64 / tot as f64 * 100.0).min(100.0);
+                            format!("{dir_txt} · {} / {} ({pct:.0}%)", human_size(t.done), human_size(tot))
+                        }
+                        _ => format!("{dir_txt} · {}", human_size(t.done)),
+                    };
+                    ui.label(RichText::new(line).size(11.5).weak());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if t.finished {
+                        let (txt, col) = if t.ok {
+                            ("done", Color32::from_rgb(0x2E, 0x9E, 0x57))
+                        } else {
+                            ("failed", WARN)
+                        };
+                        ui.label(RichText::new(txt).size(12.0).color(col));
+                    } else {
+                        ui.label(RichText::new(fmt_speed(*speed)).monospace().size(12.5).color(ACCENT));
+                    }
+                });
+            });
+            if let (Some(tot), false) = (t.total, t.finished) {
+                if tot > 0 {
+                    let frac = (t.done as f32 / tot as f32).clamp(0.0, 1.0);
+                    ui.add_space(6.0);
+                    ui.add(egui::ProgressBar::new(frac).fill(ACCENT));
+                }
+            }
+        });
+        ui.add_space(8.0);
+    }
+}
+
+fn human_size(n: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < units.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", units[i]) }
 }
 
 fn fmt_speed(bps: f64) -> String {

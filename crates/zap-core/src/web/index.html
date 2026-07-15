@@ -113,6 +113,7 @@
     transition: width .18s ease; }
   .tag { font-size: 11.5px; min-width: 46px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
   .tag.done { color: #2e9e57; } .tag.err { color: #e0554b; }
+  .rate { font-size: 11px; min-width: 62px; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
 
   /* Breadcrumb */
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; font-size: 13px; min-width: 0; }
@@ -358,11 +359,12 @@ function uploadFiles(list) { for (const f of list) uploadOne(f); }
 
 function uploadOne(file) {
   const li = document.createElement("li");
-  li.innerHTML = `<span class="name"></span><div class="bar"><i></i></div><span class="tag">0%</span>`;
+  li.innerHTML = `<span class="name"></span><div class="bar"><i></i></div><span class="rate"></span><span class="tag">0%</span>`;
   li.querySelector(".name").textContent = file.name;
   uploads.prepend(li);
-  const bar = li.querySelector(".bar > i"), tag = li.querySelector(".tag");
+  const bar = li.querySelector(".bar > i"), tag = li.querySelector(".tag"), rate = li.querySelector(".rate");
 
+  let lastT = performance.now(), lastLoaded = 0, speed = 0;
   const xhr = new XMLHttpRequest();
   const url = "/upload?path=" + encodeURIComponent(currentPath) + "&name=" + encodeURIComponent(file.name);
   xhr.open("PUT", url);
@@ -370,15 +372,23 @@ function uploadOne(file) {
     if (!e.lengthComputable) return;
     const pct = Math.round((e.loaded / e.total) * 100);
     bar.style.width = pct + "%"; tag.textContent = pct + "%";
+    const now = performance.now(), dt = (now - lastT) / 1000;
+    if (dt >= 0.3) {
+      const inst = (e.loaded - lastLoaded) / dt;
+      speed = speed ? speed * 0.4 + inst * 0.6 : inst;
+      rate.textContent = fmtSize(speed) + "/s";
+      lastT = now; lastLoaded = e.loaded;
+    }
   };
   xhr.onload = () => {
     const ok = xhr.status >= 200 && xhr.status < 300;
     bar.style.width = "100%";
+    rate.textContent = "";
     tag.textContent = ok ? "done" : "failed";
     tag.classList.add(ok ? "done" : "err");
     if (ok) loadDir(currentPath);
   };
-  xhr.onerror = () => { tag.textContent = "error"; tag.classList.add("err"); };
+  xhr.onerror = () => { rate.textContent = ""; tag.textContent = "error"; tag.classList.add("err"); };
   xhr.send(file);
 }
 

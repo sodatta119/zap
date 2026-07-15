@@ -15,10 +15,10 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -80,10 +80,72 @@ pub struct ServerHandle {
     stats: Arc<Stats>,
 }
 
-/// Running totals for a server, shared across worker threads.
+/// Direction of a transfer, from the server's point of view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Direction {
+    /// A client is sending a file to this server.
+    Upload,
+    /// A client is downloading a file from this server.
+    Download,
+}
+
+/// Live state of one transfer, updated byte-by-byte on a worker thread.
+struct TransferState {
+    id: u64,
+    name: String,
+    direction: Direction,
+    total: Option<u64>,
+    done: AtomicU64,
+    finished: AtomicBool,
+    ok: AtomicBool,
+    started: Instant,
+}
+
+/// A snapshot of one transfer for the UI.
+#[derive(Clone, Debug)]
+pub struct TransferInfo {
+    pub id: u64,
+    pub name: String,
+    pub direction: Direction,
+    pub done: u64,
+    pub total: Option<u64>,
+    pub finished: bool,
+    pub ok: bool,
+    pub elapsed_secs: f64,
+}
+
+/// Running totals + per-transfer activity, shared across worker threads.
 #[derive(Default)]
 pub struct Stats {
     bytes: AtomicU64,
+    next_id: AtomicU64,
+    transfers: Mutex<Vec<Arc<TransferState>>>,
+}
+
+impl Stats {
+    /// Register a new transfer and return its live state to update as bytes flow.
+    fn begin(&self, name: &str, direction: Direction, total: Option<u64>) -> Arc<TransferState> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let state = Arc::new(TransferState {
+            id,
+            name: name.to_string(),
+            direction,
+            total,
+            done: AtomicU64::new(0),
+            finished: AtomicBool::new(false),
+            ok: AtomicBool::new(false),
+            started: Instant::now(),
+        });
+        if let Ok(mut list) = self.transfers.lock() {
+            list.push(Arc::clone(&state));
+            // Keep only the most recent transfers.
+            let len = list.len();
+            if len > 50 {
+                list.drain(0..len - 50);
+            }
+        }
+        state
+    }
 }
 
 impl ServerHandle {
@@ -91,6 +153,25 @@ impl ServerHandle {
     /// Poll this over time to compute live throughput.
     pub fn bytes_transferred(&self) -> u64 {
         self.stats.bytes.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot of recent transfers (newest last), for an activity view.
+    pub fn transfers(&self) -> Vec<TransferInfo> {
+        let Ok(list) = self.stats.transfers.lock() else {
+            return Vec::new();
+        };
+        list.iter()
+            .map(|t| TransferInfo {
+                id: t.id,
+                name: t.name.clone(),
+                direction: t.direction,
+                done: t.done.load(Ordering::Relaxed),
+                total: t.total,
+                finished: t.finished.load(Ordering::Relaxed),
+                ok: t.ok.load(Ordering::Relaxed),
+                elapsed_secs: t.started.elapsed().as_secs_f64(),
+            })
+            .collect()
     }
 
     /// Stop the server and wait until the listening socket is released, so the
@@ -266,14 +347,18 @@ fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Re
         .map(|n| n.to_string_lossy().replace('"', ""))
         .unwrap_or_else(|| "download".to_string());
     let disposition = format!("attachment; filename=\"{filename}\"");
-    // Stream through a counting reader so throughput is tracked as bytes flow out.
-    let reader = CountingReader { inner: file, stats };
+    // Track this download and stream through a counting reader.
+    let transfer = stats.begin(&filename, Direction::Download, Some(meta.len()));
+    let reader = CountingReader { inner: file, stats, transfer: &transfer };
     let headers = vec![
         header("Content-Type", "application/octet-stream"),
         header("Content-Disposition", &disposition),
     ];
     let response = Response::new(StatusCode(200), headers, reader, Some(meta.len() as usize), None);
-    respond(request, response)
+    let result = respond(request, response);
+    transfer.finished.store(true, Ordering::Relaxed);
+    transfer.ok.store(true, Ordering::Relaxed);
+    result
 }
 
 fn handle_upload(
@@ -290,11 +375,16 @@ fn handle_upload(
         return respond(request, Response::from_string("Bad path").with_status_code(400));
     };
     let dest = folder.join(name);
+    let total = request.body_length().map(|n| n as u64);
+    let transfer = stats.begin(name, Direction::Upload, total);
 
     // On failure we must still send a response, otherwise the client hangs and
     // reports a confusing generic error instead of a clean failure.
-    match write_upload(&mut request, &dest, stats) {
+    let result = write_upload(&mut request, &dest, stats, &transfer);
+    transfer.finished.store(true, Ordering::Relaxed);
+    match result {
         Ok(bytes) => {
+            transfer.ok.store(true, Ordering::Relaxed);
             println!("received {name} ({bytes} bytes) into {}", folder.display());
             respond(request, Response::from_string("ok"))
         }
@@ -306,34 +396,43 @@ fn handle_upload(
 }
 
 /// Stream the request body to `dest`, returning the number of bytes written.
-fn write_upload(request: &mut Request, dest: &Path, stats: &Stats) -> Result<u64> {
+fn write_upload(
+    request: &mut Request,
+    dest: &Path,
+    stats: &Stats,
+    transfer: &TransferState,
+) -> Result<u64> {
     let file = File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
-    let mut writer = CountingWriter { inner: file, stats };
+    let mut writer = CountingWriter { inner: file, stats, transfer };
     io::copy(request.as_reader(), &mut writer).with_context(|| format!("writing {}", dest.display()))
 }
 
-/// A reader that adds every byte read to the shared throughput counter.
+/// A reader that counts bytes into the global total and this transfer.
 struct CountingReader<'a, R> {
     inner: R,
     stats: &'a Stats,
+    transfer: &'a TransferState,
 }
 impl<R: Read> Read for CountingReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.stats.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        self.transfer.done.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
     }
 }
 
-/// A writer that adds every byte written to the shared throughput counter.
+/// A writer that counts bytes into the global total and this transfer.
 struct CountingWriter<'a, W> {
     inner: W,
     stats: &'a Stats,
+    transfer: &'a TransferState,
 }
 impl<W: Write> Write for CountingWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.inner.write(buf)?;
         self.stats.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        self.transfer.done.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
     }
     fn flush(&mut self) -> io::Result<()> {
