@@ -53,7 +53,10 @@ switch and (some) pay* — before investing in Horizon 1.
       *Done:* green "Reachable at <url>" with prominent URL on all three surfaces.
 
 ### Phase 0.2 — Validation experiments · `VALID`  ⛔ do BEFORE Play Store spend & all of H1
-- [ ] **H0-V1** Landing page + 60-sec **Mac↔Android** demo video. **M**
+- [~] **H0-V1** Landing page + 60-sec **Mac↔Android** demo video. **M**
+      *Landing page drafted* → `site/index.html` (+ `site/privacy.html`), amber/dark,
+      responsive, light+dark. TODO by owner: host on GitHub Pages, wire the
+      waitlist button to a form (Tally/Google Forms/Formspree), record the demo video.
 - [ ] **H0-V2** Post to communities (r/androidapps, r/apple, r/opensource, HN,
       LocalSend issues) with the "works when AirDrop/Quick Share can't" angle;
       measure signups / stars / comments. **S**
@@ -71,8 +74,10 @@ switch and (some) pay* — before investing in Horizon 1.
       Signing). **M**
 - [ ] **H0-P2** `MANAGE_EXTERNAL_STORAGE` declaration form + demo video.
       Plan-B ready: SAF-only scoped storage if rejected. **M**
-- [ ] **H0-P3** Privacy policy URL (GitHub Pages) — "files stay on your LAN, no
-      data collected." **S**
+- [~] **H0-P3** Privacy policy URL (GitHub Pages) — "files stay on your LAN, no
+      data collected." **S** *Drafted* → `site/privacy.html` (maps to a Data-Safety
+      "no data collected/shared" declaration). TODO by owner: fill date + contact
+      email, host, use the URL in the Play listing.
 - [ ] **H0-P4** Data-safety form (no data collected/shared) + content rating. **S**
 - [ ] **H0-P5** Store listing: icon 512, feature graphic 1024×500, screenshots,
       short+full description. **M**

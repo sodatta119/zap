@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zap — Privacy Policy</title>
+<meta name="description" content="Zap transfers files directly between your devices on your local Wi-Fi. It collects no personal data.">
+<style>
+  :root {
+    --ground:#12100c; --ground-2:#1a1610; --card:#201b13; --line:#322a1e;
+    --ink:#f5efe4; --muted:#a89f8d; --accent:#f5a623; --accent-2:#ff8c42; --ok:#45b374;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --ground:#f7f3ea; --ground-2:#f2ecdf; --card:#fffdf8; --line:#e6dcc9;
+      --ink:#241f16; --muted:#7a705d; --accent:#c9791a; --accent-2:#e06a1f; --ok:#2e8f56; color-scheme: light; }
+  }
+  :root[data-theme="dark"] { --ground:#12100c; --ground-2:#1a1610; --card:#201b13; --line:#322a1e;
+    --ink:#f5efe4; --muted:#a89f8d; --accent:#f5a623; --accent-2:#ff8c42; --ok:#45b374; color-scheme: dark; }
+  :root[data-theme="light"] { --ground:#f7f3ea; --ground-2:#f2ecdf; --card:#fffdf8; --line:#e6dcc9;
+    --ink:#241f16; --muted:#7a705d; --accent:#c9791a; --accent-2:#e06a1f; --ok:#2e8f56; color-scheme: light; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.65; }
+  .wrap { width: min(720px, 92vw); margin-inline: auto; }
+  a { color: var(--accent); }
+  .bar { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 750; font-size: 20px; letter-spacing: -.01em; text-decoration: none; color: var(--ink); }
+  .bolt { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(150deg, var(--accent), var(--accent-2)); }
+  .bolt svg { width: 18px; height: 18px; }
+  .back { color: var(--muted); text-decoration: none; font-size: 14px; }
+  .back:hover { color: var(--ink); }
+
+  main { padding: clamp(40px, 7vw, 72px) 0 80px; }
+  h1 { font-size: clamp(30px, 5vw, 42px); letter-spacing: -.02em; margin: 0 0 8px; line-height: 1.1; }
+  .sub { color: var(--muted); margin: 0 0 6px; }
+  .meta { color: var(--muted); font-size: 13.5px; font-family: ui-monospace, Menlo, monospace; }
+  .callout { margin: 30px 0; padding: 20px 22px; border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--line));
+    border-radius: 14px; background: color-mix(in srgb, var(--ok) 8%, var(--card)); }
+  .callout b { color: var(--ok); }
+  h2 { font-size: 19px; margin: 40px 0 10px; letter-spacing: -.01em; }
+  p, li { color: color-mix(in srgb, var(--ink) 88%, var(--muted)); }
+  ul { padding-left: 20px; }
+  li { margin: 6px 0; }
+  .perm { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--accent); }
+  .note { margin-top: 44px; padding: 16px 18px; border: 1px dashed var(--line); border-radius: 12px;
+    color: var(--muted); font-size: 13.5px; }
+  footer { border-top: 1px solid var(--line); padding: 26px 0; color: var(--muted); font-size: 13px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<header class="wrap bar">
+  <a class="brand" href="index.html">
+    <span class="bolt"><svg viewBox="0 0 24 24" fill="#1a1204"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg></span>
+    Zap
+  </a>
+  <a class="back" href="index.html">← Back</a>
+</header>
+
+<main class="wrap">
+  <h1>Privacy Policy</h1>
+  <p class="sub">Zap — local file transfer over Wi-Fi</p>
+  <p class="meta">Last updated: [ADD DATE]</p>
+
+  <div class="callout">
+    <b>Short version:</b> Zap transfers your files directly between your own devices on your
+    local Wi-Fi network. It has no servers, no account, and no analytics. We do not collect,
+    store, transmit, sell, or share any personal data — ever.
+  </div>
+
+  <h2>What Zap does</h2>
+  <p>Zap turns one device into a small web server on your local network. Another device on the
+    same Wi-Fi connects to it through a browser to send or receive files. Data moves directly
+    between the two devices. Nothing passes through us or any third party.</p>
+
+  <h2>Data we collect</h2>
+  <p><b>None.</b> Zap does not collect or process any personal or usage data. There are no
+    accounts, no cloud storage, no tracking, no advertising, and no analytics SDKs. Your files
+    and their contents are never sent to us and are never visible to us.</p>
+
+  <h2>Permissions and why they’re used</h2>
+  <p>The Android app requests only what it needs to move files on your own network, and uses
+    them entirely on-device:</p>
+  <ul>
+    <li><span class="perm">Storage / All files access</span> — to read the files you choose to
+      share and to save files that others send you. You pick the folder.</li>
+    <li><span class="perm">Local network &amp; Internet</span> — to run the local server and let
+      devices on the same Wi-Fi reach it. Zap makes no outbound internet connections.</li>
+    <li><span class="perm">Notifications &amp; foreground service</span> — to keep the transfer
+      server running and show you that it’s active while you share.</li>
+  </ul>
+
+  <h2>Sharing and disclosure</h2>
+  <p>Because no data is collected, none is shared or sold. Files only ever go to the device you
+    are actively transferring to, on your network, at your instruction.</p>
+
+  <h2>Security</h2>
+  <p>Transfers stay on your local network and never touch the internet. You can optionally
+    require a password before anyone can connect. Large transfers are integrity-checked so a
+    received file matches the original.</p>
+
+  <h2>Children’s privacy</h2>
+  <p>Zap is a general-purpose utility and does not knowingly collect any information from anyone,
+    including children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If this policy changes, the updated version will be posted here with a new “last updated”
+    date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about privacy? Reach us at <a href="mailto:[ADD EMAIL]">[ADD EMAIL]</a>.</p>
+
+  <div class="note">
+    <b>Before you publish:</b> fill in the date, a contact email, and (if you incorporate or
+    trade under a name) the entity that owns the app. This wording maps to a Play Data-Safety
+    declaration of “No data collected / No data shared.” If you ever add analytics, crash
+    reporting, or any network feature, revise this policy and the Data-Safety form first.
+  </div>
+</main>
+
+<footer class="wrap">© <span id="y"></span> Zap. Files stay on your LAN.</footer>
+<script>
+  document.getElementById("y").textContent = new Date().getFullYear();
+  try { var t = localStorage.getItem("zap-theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
+</body>
+</html>
