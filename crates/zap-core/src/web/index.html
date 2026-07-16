@@ -129,6 +129,14 @@
   #uploads .name .folder { color: var(--accent); }
   #uploads .incoming .hint { display: block; font-size: 11px; color: var(--muted-fg); margin-top: 2px; }
   #uploads .incoming .tag { color: var(--accent); }
+  .clearx {
+    flex: none; cursor: pointer; padding: 0; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted-fg); background: none; border: none; border-radius: 50%;
+  }
+  .clearx svg { width: 14px; height: 14px; fill: currentColor; display: block; }
+  .clearx:hover { color: #e0554b; background: color-mix(in srgb, #e0554b 14%, transparent); }
+  .clearx:active { transform: scale(.9); }
 
   /* Breadcrumb */
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; font-size: 13px; min-width: 0; }
@@ -528,6 +536,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PAUSE_ICON = `<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>`;
 const PLAY_ICON = `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+const CLEAR_ICON = `<svg viewBox="0 0 24 24"><path d="M18.3 5.7L12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3L16.9 4.3z"/></svg>`;
+
+// Ask the host to delete an interrupted upload's partial temp file.
+function discardPartial(dir, name) {
+  if (!name) return Promise.resolve();
+  return fetch("/upload?path=" + encodeURIComponent(dir || "") + "&name=" + encodeURIComponent(name), { method: "DELETE" }).catch(() => {});
+}
+
+// Append a "clear" (×) button to a finished/interrupted row: removes the row and
+// (when name is given) discards any host-side partial for it. No-op on the host
+// for already-completed files, so it's safe to offer on every terminal row.
+function addClearButton(li, dir, name) {
+  if (li.querySelector(".clearx")) return;
+  const b = document.createElement("button");
+  b.className = "clearx"; b.title = b.ariaLabel = "Clear";
+  b.innerHTML = CLEAR_ICON;
+  b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); discardPartial(dir, name); li.remove(); };
+  li.appendChild(b);
+}
 
 // Single file → its own row.
 async function uploadOne(file) {
@@ -549,6 +576,7 @@ async function uploadOne(file) {
     ui.tag.classList.add("err");
   } finally {
     pauseBtn.hidden = true;
+    addClearButton(li, currentPath, file.name); // clear/discard once it's terminal
   }
 }
 
@@ -558,7 +586,7 @@ async function uploadFolderEntries(entries) {
   const rootName = entries[0].relPath.split("/")[0] || "folder";
   const totalBytes = entries.reduce((s, e) => s + e.file.size, 0);
   const label = "📁 " + rootName + " (" + entries.length + (entries.length === 1 ? " file)" : " files)");
-  const { ui, pauseBtn } = makeRow(label);
+  const { li, ui, pauseBtn } = makeRow(label);
   const ctl = newCtl();
   wirePause(pauseBtn, ctl, ui);
 
@@ -596,6 +624,7 @@ async function uploadFolderEntries(entries) {
     loadDir(currentPath);
   } finally {
     pauseBtn.hidden = true;
+    addClearButton(li); // remove the aggregate row (per-file partials clear via incoming rows)
   }
 }
 
@@ -760,6 +789,7 @@ async function loadIncoming() {
     li.querySelector(".nm").textContent = e.name;
     li.querySelector(".rate").textContent = fmtSize(e.done) + " received";
     uploads.appendChild(li);
+    addClearButton(li, e.path || "", e.name); // discard the host partial + remove row
   }
 }
 

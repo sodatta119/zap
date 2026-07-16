@@ -319,9 +319,10 @@ class MainActivity : AppCompatActivity() {
             }
             // "Open" reveals/opens a completed file that still exists on disk.
             val openBtn = row.findViewById<Button>(R.id.openBtn)
-            if (t.finished && t.ok && t.path.isNotEmpty() && java.io.File(t.path).exists()) {
+            val target = revealTarget(t)
+            if (t.finished && t.ok && target != null) {
                 openBtn.visibility = View.VISIBLE
-                openBtn.setOnClickListener { openFile(t.path) }
+                openBtn.setOnClickListener { openFile(target.absolutePath) }
             } else {
                 openBtn.visibility = View.GONE
             }
@@ -431,6 +432,18 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_TEXT, text)
         }
         startActivity(Intent.createChooser(send, "Share zap link"))
+    }
+
+    /// File to reveal for a transfer: the stored path if it exists, else a
+    /// fallback of <shared folder>/<name> (covers older history rows saved before
+    /// uploads recorded their path, and files that moved). Null if neither exists.
+    private fun revealTarget(t: Xfer): java.io.File? {
+        if (t.path.isNotEmpty()) {
+            val f = java.io.File(t.path)
+            if (f.exists()) return f
+        }
+        val f = java.io.File(currentFolder(), t.name)
+        return if (f.exists()) f else null
     }
 
     /// Open a received/sent file with the system chooser (via a FileProvider URI).

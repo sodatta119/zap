@@ -306,6 +306,7 @@ impl eframe::App for ZapApp {
         self.update_speed(ctx);
         let transfer_rows = self.poll_transfers();
         let running = self.running.is_some();
+        let share_dir = self.dir.clone(); // for "Open location" fallback in transfers_view
 
         // Primary action pinned to the bottom (always reachable).
         egui::TopBottomPanel::bottom("actions")
@@ -384,7 +385,7 @@ impl eframe::App for ZapApp {
                             self.settings_card(ui);
                         }
                     }
-                    Tab::Transfers => transfers_view(ui, running, &transfer_rows),
+                    Tab::Transfers => transfers_view(ui, running, &transfer_rows, &share_dir),
                 }
                 ui.add_space(6.0);
             });
@@ -534,7 +535,19 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) {
 }
 
 /// Activity list: one card per transfer with live per-file speed.
-fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]) {
+/// Resolve the file to reveal for a transfer: the stored path if it exists, else
+/// a fallback of `<shared dir>/<name>` (covers older history rows saved before
+/// uploads recorded their path, and files that simply moved). `None` if neither
+/// exists, so the button only shows when there's really something to open.
+fn reveal_target(path: &str, name: &str, share_dir: &std::path::Path) -> Option<String> {
+    if !path.is_empty() && std::path::Path::new(path).exists() {
+        return Some(path.to_string());
+    }
+    let fallback = share_dir.join(name);
+    fallback.exists().then(|| fallback.to_string_lossy().into_owned())
+}
+
+fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)], share_dir: &std::path::Path) {
     if rows.is_empty() {
         card(ui, |ui| {
             let msg = if running {
@@ -587,14 +600,18 @@ fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]
                     ui.add(egui::ProgressBar::new(frac).fill(ACCENT));
                 }
             }
-            // Reveal the received/sent file in the OS file manager.
-            if t.finished && t.ok && !t.path.is_empty() && std::path::Path::new(&t.path).exists() {
-                ui.add_space(6.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Open location").clicked() {
-                        reveal_in_file_manager(&t.path);
-                    }
-                });
+            // Reveal the received/sent file in the OS file manager. Fall back to
+            // <shared dir>/<name> when the stored path is empty (older history
+            // rows, saved before uploads recorded their path) or the file moved.
+            if t.finished && t.ok {
+                if let Some(p) = reveal_target(&t.path, &t.name, share_dir) {
+                    ui.add_space(6.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Open location").clicked() {
+                            reveal_in_file_manager(&p);
+                        }
+                    });
+                }
             }
         });
         ui.add_space(8.0);
@@ -736,4 +753,30 @@ fn zlib_stored(data: &[u8]) -> Vec<u8> {
     }
     out.extend_from_slice(&(((b << 16) | a) as u32).to_be_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reveal_target;
+    use std::path::PathBuf;
+
+    #[test]
+    fn reveal_target_uses_path_then_falls_back_to_shared_dir() {
+        let dir = std::env::temp_dir().join(format!("zap-reveal-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("recv.jpg"), b"x").unwrap();
+
+        // Stored path present + exists → use it.
+        let p = dir.join("recv.jpg");
+        assert_eq!(reveal_target(&p.to_string_lossy(), "recv.jpg", &dir), Some(p.to_string_lossy().into_owned()));
+
+        // Empty path (old history row) but the file is in the shared dir → fallback.
+        assert_eq!(reveal_target("", "recv.jpg", &dir), Some(p.to_string_lossy().into_owned()));
+
+        // Empty path and no such file → nothing to open.
+        assert_eq!(reveal_target("", "missing.jpg", &dir), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

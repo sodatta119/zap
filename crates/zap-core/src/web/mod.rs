@@ -533,6 +533,12 @@ fn handle(request: Request, dir: &Path, auth: Option<&Auth>, stats: &Arc<Stats>)
             let offset = query_param(query, "offset").and_then(|s| s.parse::<u64>().ok());
             handle_upload(request, dir, &rel, name.as_deref(), offset, stats)
         }
+        // Discard an interrupted upload's partial temp file (client "clear").
+        (Method::Delete, "/upload") => {
+            let rel = query_param(query, "path").map(decode_percent).unwrap_or_default();
+            let name = query_param(query, "name").map(decode_percent);
+            discard_partial(request, dir, &rel, name.as_deref())
+        }
         _ => respond(request, Response::from_string("Not found").with_status_code(404)),
     }
 }
@@ -590,7 +596,12 @@ fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Re
     if let Some(cr) = &content_range {
         headers.push(header("Content-Range", cr));
     }
-    let response = Response::new(StatusCode(status), headers, reader, Some(body_len as usize), None);
+    // tiny_http defaults to chunked transfer for any body >= 32 KB, which drops
+    // the Content-Length header — so the browser can't show download progress
+    // ("Downloading… 0 KB" with no bar). Raise the threshold so a known-length
+    // file is always sent with Content-Length (identity), streamed not buffered.
+    let response = Response::new(StatusCode(status), headers, reader, Some(body_len as usize), None)
+        .with_chunked_threshold(usize::MAX);
     let result = respond(request, response);
     transfer.finished.store(true, Ordering::Relaxed);
     transfer.ok.store(true, Ordering::Relaxed);
@@ -902,6 +913,19 @@ fn handle_upload_head(request: Request, root: &Path, rel_dir: &str, name: Option
             .with_header(header("X-Zap-Offset", &offset.to_string()))
             .with_header(header("Accept-Ranges", "bytes")),
     )
+}
+
+/// `DELETE /upload?path&name` → remove the interrupted upload's `.zap-part-<name>`
+/// temp file (the client "clear" action). No-op (still 200) if it's already gone.
+fn discard_partial(request: Request, root: &Path, rel_dir: &str, name: Option<&str>) -> Result<()> {
+    let Some(name) = name.filter(|n| is_plain_filename(n)) else {
+        return respond(request, Response::from_string("").with_status_code(400));
+    };
+    let Some(folder) = resolve_within(root, rel_dir) else {
+        return respond(request, Response::from_string("").with_status_code(400));
+    };
+    let _ = fs::remove_file(part_path(&folder, name));
+    respond(request, Response::from_string("ok"))
 }
 
 fn handle_upload(
@@ -1635,6 +1659,116 @@ mod tests {
         })
         .expect("bind");
         (port, handle)
+    }
+
+    /// Both a received (upload) and a served (download) transfer must expose a
+    /// real, existing `path` so "Open location" can show for each.
+    #[test]
+    fn open_location_path_set_for_upload_and_download() {
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-openloc-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("existing.bin"), b"already here").unwrap();
+        let (port, handle) = spawn_test_server(&dir);
+
+        // Upload (received by host).
+        let body = b"ABCDEFGHIJ";
+        let crc_src = dir.join("crc-src");
+        fs::write(&crc_src, body).unwrap();
+        let crc = crc32_file(&crc_src).unwrap();
+        let head = format!(
+            "PUT /upload?path=&name=recv.bin&offset=0 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\
+             X-Zap-Total: 10\r\nX-Zap-Crc32: {crc:08x}\r\nContent-Length: 10\r\n\r\n"
+        );
+        let _ = send_raw(port, &head, body);
+
+        // Download (served out by host).
+        let _ = send_raw(
+            port,
+            "GET /download?path=existing.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            b"",
+        );
+
+        let list = handle.transfers();
+        let up = list.iter().find(|t| t.name == "recv.bin").expect("upload transfer present");
+        let down = list.iter().find(|t| t.name == "existing.bin").expect("download transfer present");
+        for (label, t) in [("upload", up), ("download", down)] {
+            assert!(t.finished && t.ok, "{label} should be finished+ok");
+            assert!(!t.path.is_empty(), "{label} must carry a path for Open location");
+            assert!(Path::new(&t.path).exists(), "{label} path must exist: {}", t.path);
+        }
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A finished upload's persisted history row must carry its file path (last
+    /// TSV field), so "Open location" works after a restart — same as downloads.
+    #[test]
+    fn history_saves_upload_path() {
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-histpath-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let histfile = dir.join("transfers.tsv");
+        let port = free_port();
+        let (_info, handle) = spawn(ServeConfig {
+            dir: dir.clone(),
+            port,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            auth: None,
+            history: Some(histfile.clone()),
+        })
+        .expect("bind");
+
+        let body = b"ABCDEFGHIJ";
+        let crc_src = dir.join("crc-src");
+        fs::write(&crc_src, body).unwrap();
+        let crc = crc32_file(&crc_src).unwrap();
+        let head = format!(
+            "PUT /upload?path=&name=up.bin&offset=0 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\
+             X-Zap-Total: 10\r\nX-Zap-Crc32: {crc:08x}\r\nContent-Length: 10\r\n\r\n"
+        );
+        let _ = send_raw(port, &head, body);
+        // Give the finalize's save_history a moment to hit disk.
+        let tsv = fs::read_to_string(&histfile).unwrap_or_default();
+        let up_line = tsv.lines().find(|l| l.starts_with("up\t")).expect("upload row in history");
+        let fields: Vec<&str> = up_line.split('\t').collect();
+        assert_eq!(fields.len(), 7, "row has all 7 fields incl. path: {up_line:?}");
+        assert!(!fields[6].is_empty(), "upload history row must carry a path: {up_line:?}");
+        assert!(fields[6].ends_with("up.bin"), "path points at the file: {}", fields[6]);
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// DELETE /upload removes an interrupted upload's `.zap-part-` temp file.
+    #[test]
+    fn discard_removes_partial() {
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-discard-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (port, handle) = spawn_test_server(&dir);
+
+        // Leave a partial behind (interrupted upload).
+        let head = "PUT /upload?path=&name=big.bin&offset=0 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\
+             X-Zap-Total: 100\r\nContent-Length: 5\r\n\r\n";
+        let _ = send_raw(port, head, b"abcde");
+        assert!(dir.join(".zap-part-big.bin").exists(), "partial should exist after interrupted PUT");
+
+        let resp = send_raw(
+            port,
+            "DELETE /upload?path=&name=big.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            b"",
+        );
+        let r = String::from_utf8_lossy(&resp);
+        assert!(r.contains("200"), "discard should succeed: {r}");
+        assert!(!dir.join(".zap-part-big.bin").exists(), "partial should be gone after discard");
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
