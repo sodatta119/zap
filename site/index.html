@@ -171,6 +171,12 @@
   .step h3 { font-size: 18px; margin-bottom: 8px; }
   .step p { color: var(--muted); font-size: 14.5px; margin: 0; }
   .step .mono { color: var(--ink); }
+  .step .shot {
+    display: block; margin-top: 16px; border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--line); box-shadow: 0 10px 34px rgba(0,0,0,.30);
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+  }
+  .step .shot img { display: block; width: 100%; height: auto; }
 
   /* ---- Features ---- */
   .feats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
@@ -326,16 +332,19 @@
         <span class="n">01</span>
         <h3>Run Zap on one device</h3>
         <p>The phone or computer becomes a tiny local server and shows a <span class="mono">http://…</span> link and a QR code.</p>
+        <span class="shot"><img src="screens/step1-server.png" alt="Zap desktop app showing the reachable link and a QR code" loading="lazy" width="880" height="1200"></span>
       </div>
       <div class="step">
         <span class="n">02</span>
         <h3>Open the link on the other</h3>
         <p>Same Wi-Fi, any browser - or scan the QR to skip the password entirely.</p>
+        <span class="shot"><img src="screens/step2-client.png" alt="The Zap page open in a phone browser, listing shared files" loading="lazy" width="780" height="1162"></span>
       </div>
       <div class="step">
         <span class="n">03</span>
         <h3>Send &amp; receive</h3>
         <p>Drag files or whole folders in, browse and download out. Big transfers resume if Wi-Fi drops and are verified on arrival.</p>
+        <span class="shot"><img src="screens/step3-transfer.png" alt="A live transfer in progress with speed, percentage and a pause button" loading="lazy" width="780" height="1264"></span>
       </div>
     </div>
   </section>
