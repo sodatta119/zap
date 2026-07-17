@@ -426,18 +426,20 @@
   // via anime.set. Because rest (b=0) is always identity, scrolling back up always
   // reassembles cleanly - no dependence on captured keyframe start values.
   function explode(b) {
-    anime.set('#a-bezel',    { scale: 1 + 0.34 * b, rotate: 38 * b,  opacity: 1 - 0.15 * b });
-    anime.set('#a-dash',     { scale: 1 + 0.62 * b, rotate: -58 * b, opacity: 1 - 0.5 * b });
-    anime.set('#a-aperture', { scale: 1 + 0.85 * b, rotate: 66 * b,  opacity: 1 - 0.15 * b });
-    anime.set('#a-ring',     { scale: 1 + 0.22 * b, rotate: -30 * b, opacity: 1 - 0.2 * b });
-    anime.set('#a-cross',    { scale: 1 + 0.7 * b,  opacity: 0.22 * (1 - b) });
+    // The whole assembly fades toward 0.2 as it expands on scroll (b: 0 -> 1).
+    anime.set('#assembly',   { opacity: 1 - 0.8 * b });
+    anime.set('#a-bezel',    { scale: 1 + 0.34 * b, rotate: 38 * b });
+    anime.set('#a-dash',     { scale: 1 + 0.62 * b, rotate: -58 * b });
+    anime.set('#a-aperture', { scale: 1 + 0.85 * b, rotate: 66 * b });
+    anime.set('#a-ring',     { scale: 1 + 0.22 * b, rotate: -30 * b });
+    anime.set('#a-cross',    { scale: 1 + 0.7 * b, opacity: 0.22 });
     anime.set('#a-core',     { scale: 1 - 0.16 * b });
   }
 
   function revealAssembly() {
-    anime.set('#assembly', { opacity: 1, scale: 1 });
+    anime.set('#assembly', { scale: 1 });
     anime.set(PARTS, { opacity: 1, scale: 1, rotate: 0 });
-    explode(0);
+    explode(0); // rest state: full opacity, identity transforms
   }
 
   var ready = false;
