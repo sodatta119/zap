@@ -22,7 +22,7 @@ object NativeBridge {
     /** The URL another device on the same Wi-Fi should open, or null. */
     external fun nativeUrl(handle: Long): String?
 
-    /** Share URL — includes the pairing key when secured (recipient auto-signs-in). */
+    /** Share URL - includes the pairing key when secured (recipient auto-signs-in). */
     external fun nativeShareUrl(handle: Long): String?
 
     /** Recent transfers as a JSON array string (see Rust doc). "[]" if none. */
@@ -30,7 +30,7 @@ object NativeBridge {
 
     /**
      * Number of HTTP requests any client has made since start. While this stays
-     * 0, no device has reached the phone — the UI uses it to warn about wrong
+     * 0, no device has reached the phone - the UI uses it to warn about wrong
      * Wi-Fi / AP-client isolation instead of showing a dead link.
      */
     external fun nativeRequests(handle: Long): Long
@@ -42,7 +42,7 @@ object NativeBridge {
 /**
  * Tiny in-process holder so the [MainActivity] UI can reflect what
  * [ZapService] is doing. Both run in the same process, so a shared object is
- * enough — no IPC needed.
+ * enough - no IPC needed.
  */
 object ZapState {
     @Volatile
@@ -53,7 +53,7 @@ object ZapState {
     var running: Boolean = false
         private set
 
-    /** Native handle of the running server (0 when stopped) — for polling transfers. */
+    /** Native handle of the running server (0 when stopped) - for polling transfers. */
     @Volatile
     var handle: Long = 0
         private set

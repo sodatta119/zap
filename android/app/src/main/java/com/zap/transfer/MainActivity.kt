@@ -174,7 +174,7 @@ class MainActivity : AppCompatActivity() {
     private fun render() {
         val running = ZapState.running
         val url = ZapState.url
-        // A localhost URL means no Wi-Fi/LAN IP was found — warn instead.
+        // A localhost URL means no Wi-Fi/LAN IP was found - warn instead.
         val noWifi = running && (url == null || url.contains("localhost") || url.contains("127.0.0.1"))
         val reachable = running && !noWifi
         status.text = when {
@@ -186,7 +186,7 @@ class MainActivity : AppCompatActivity() {
         status.textSize = if (reachable) 14f else 18f
         urlView.text = when {
             !running -> "Start to share over Wi-Fi"
-            noWifi -> "No Wi-Fi detected — connect to Wi-Fi, then Stop and Start again"
+            noWifi -> "No Wi-Fi detected - connect to Wi-Fi, then Stop and Start again"
             else -> url ?: "…"
         }
         urlView.setTextColor(if (noWifi) 0xFFE0554B.toInt() else if (reachable) 0xFFF2F2F2.toInt() else 0xFF8A8A90.toInt())
@@ -269,7 +269,7 @@ class MainActivity : AppCompatActivity() {
 
         if (list.isEmpty()) {
             val tv = TextView(this).apply {
-                text = if (running) "No transfers yet — send or grab a file from another device."
+                text = if (running) "No transfers yet - send or grab a file from another device."
                 else "Start the server to see transfers here."
                 setTextColor(0xFF8A8A90.toInt())
                 textSize = 13f

@@ -50,7 +50,7 @@ fn run() -> Result<()> {
                 |info| {
                     print_banner(info);
                     if let Some(login) = &login {
-                        println!("Login required — {login}");
+                        println!("Login required - {login}");
                     }
                 },
             )
@@ -139,10 +139,10 @@ fn resolve_device(transport: &dyn Transport, requested: Option<&str>) -> Result<
 }
 
 /// Present connection details for a freshly-started web server: the share path,
-/// the URL, and a scannable QR code. This is CLI presentation — the core server
+/// the URL, and a scannable QR code. This is CLI presentation - the core server
 /// stays free of terminal concerns.
 fn print_banner(info: &ServerInfo) {
-    println!("⚡ Zap — sharing {}", info.dir.display());
+    println!("⚡ Zap - sharing {}", info.dir.display());
     println!();
     match info.lan_ip {
         Some(ip) => {
@@ -157,11 +157,11 @@ fn print_banner(info: &ServerInfo) {
                 println!("\n{qr}");
             }
             if info.auth_token.is_some() {
-                println!("(Scanning the QR signs in automatically — no password typing.)");
+                println!("(Scanning the QR signs in automatically - no password typing.)");
             }
         }
         None => {
-            println!("⚠ No Wi-Fi/LAN IP detected — connect to Wi-Fi (not just a cable/hotspot).");
+            println!("⚠ No Wi-Fi/LAN IP detected - connect to Wi-Fi (not just a cable/hotspot).");
             println!(
                 "Serving on port {}; find this machine's Wi-Fi IP and open http://<ip>:{}/",
                 info.port, info.port

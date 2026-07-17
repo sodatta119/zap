@@ -52,7 +52,7 @@ pub struct ServeConfig {
 
 /// Details about a running server, handed to the caller once it is bound and
 /// listening. Callers (the CLI, an Android UI, …) use this to tell the user how
-/// to connect — this crate itself performs no presentation.
+/// to connect - this crate itself performs no presentation.
 #[derive(Debug, Clone)]
 pub struct ServerInfo {
     /// Canonicalized directory being shared.
@@ -152,7 +152,7 @@ pub struct Stats {
     bytes: AtomicU64,
     next_id: AtomicU64,
     /// Count of HTTP requests accepted since start. A non-zero value proves at
-    /// least one client actually reached this host — used to distinguish a
+    /// least one client actually reached this host - used to distinguish a
     /// working setup from one where nothing can connect (wrong Wi-Fi, AP/client
     /// isolation, firewall). See [`ServerHandle::requests_seen`].
     requests: AtomicU64,
@@ -239,8 +239,8 @@ impl Stats {
     }
 
     /// Begin (or resume) a keyed resumable upload. If an unfinished transfer for
-    /// the same `key` (destination) already exists — an earlier chunk or a prior
-    /// attempt of the same file — reuse it so every chunk and every pause/resume
+    /// the same `key` (destination) already exists - an earlier chunk or a prior
+    /// attempt of the same file - reuse it so every chunk and every pause/resume
     /// shows as one continuous row instead of spawning a new one each time.
     fn begin_upload(&self, key: &str, name: &str, total: Option<u64>, path: &str) -> Arc<TransferState> {
         if let Ok(list) = self.transfers.lock() {
@@ -297,7 +297,7 @@ impl ServerHandle {
     }
 
     /// Number of HTTP requests any client has made since the server started.
-    /// While this stays 0, no device has managed to reach the host — a front-end
+    /// While this stays 0, no device has managed to reach the host - a front-end
     /// can wait a few seconds and, if it's still 0, surface an AP/client-isolation
     /// or wrong-network hint instead of leaving the user staring at a dead link.
     pub fn requests_seen(&self) -> u64 {
@@ -333,7 +333,7 @@ impl ServerHandle {
 
     fn shutdown(&mut self) {
         // `unblock` wakes exactly one thread blocked in `incoming_requests`,
-        // and there is exactly one — the acceptor — so a single call is enough.
+        // and there is exactly one - the acceptor - so a single call is enough.
         self.server.unblock();
         if let Some(acceptor) = self.acceptor.take() {
             let _ = acceptor.join();
@@ -352,7 +352,7 @@ impl Drop for ServerHandle {
 /// Bind the web server, invoke `on_ready` exactly once with the live
 /// [`ServerInfo`], then serve requests until the process is stopped (blocking).
 ///
-/// `on_ready` is where the caller presents connection details — the core does
+/// `on_ready` is where the caller presents connection details - the core does
 /// no printing of its own, so the same server can back a terminal or a GUI.
 pub fn serve(config: ServeConfig, on_ready: impl FnOnce(&ServerInfo)) -> Result<()> {
     let (server, dir, mut info) = bind(&config)?;
@@ -420,7 +420,7 @@ fn bind(config: &ServeConfig) -> Result<(Arc<Server>, Arc<PathBuf>, ServerInfo)>
 
 /// Create the listening socket with `SO_REUSEADDR` set *before* bind, then start
 /// listening. `SO_REUSEADDR` lets a fresh run bind the port even if the previous
-/// socket is still lingering in `TIME_WAIT` — belt-and-suspenders on top of the
+/// socket is still lingering in `TIME_WAIT` - belt-and-suspenders on top of the
 /// single-acceptor clean shutdown, so a quick stop→start never hits `EADDRINUSE`.
 fn bind_listener(addr: SocketAddr) -> Result<TcpListener> {
     let domain = Domain::for_address(addr);
@@ -597,7 +597,7 @@ fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Re
         headers.push(header("Content-Range", cr));
     }
     // tiny_http defaults to chunked transfer for any body >= 32 KB, which drops
-    // the Content-Length header — so the browser can't show download progress
+    // the Content-Length header - so the browser can't show download progress
     // ("Downloading… 0 KB" with no bar). Raise the threshold so a known-length
     // file is always sent with Content-Length (identity), streamed not buffered.
     let response = Response::new(StatusCode(status), headers, reader, Some(body_len as usize), None)
@@ -750,8 +750,8 @@ impl Read for ChannelReader {
 
 const Z64_THRESHOLD: u64 = 0xFFFF_FFFF;
 
-/// Write a streaming ZIP of `files` (store method). Reads each file twice — once
-/// for its crc32, once to stream the data — so headers carry real crc/sizes and
+/// Write a streaming ZIP of `files` (store method). Reads each file twice - once
+/// for its crc32, once to stream the data - so headers carry real crc/sizes and
 /// no data descriptors are needed (maximally compatible). ZIP64 fields kick in
 /// per-entry when a size or offset crosses 4 GB.
 fn write_zip(w: &mut impl Write, files: &[(PathBuf, String, u64)]) -> io::Result<()> {
@@ -762,7 +762,7 @@ fn write_zip(w: &mut impl Write, files: &[(PathBuf, String, u64)]) -> io::Result
     for (abs, name, size) in files {
         let crc = match crc32_file(abs) {
             Ok(c) => c,
-            Err(_) => continue, // file vanished/unreadable — skip it
+            Err(_) => continue, // file vanished/unreadable - skip it
         };
         let nb = name.as_bytes();
         let name_z64 = *size >= Z64_THRESHOLD;
@@ -1019,7 +1019,7 @@ fn resumable_upload(
                     Response::from_string("ok").with_header(header("X-Zap-Verified", "true")),
                 );
             } else {
-                // Corrupt — discard the temp file so a retry starts clean.
+                // Corrupt - discard the temp file so a retry starts clean.
                 let _ = fs::remove_file(&part);
                 eprintln!("zap: integrity check failed for {name} (crc mismatch)");
                 stats.save_history();
@@ -1034,7 +1034,7 @@ fn resumable_upload(
     }
 
     // Not complete yet: report how far we got. Either the client is chunking, or
-    // the connection dropped mid-PUT — either way the temp file survives for the
+    // the connection dropped mid-PUT - either way the temp file survives for the
     // next resume, keyed off this offset.
     match write_res {
         Ok(_) => respond(
@@ -1055,7 +1055,7 @@ fn resumable_upload(
     }
 }
 
-/// One-shot upload (no resume) — the original behavior, kept for any client that
+/// One-shot upload (no resume) - the original behavior, kept for any client that
 /// doesn't send an `offset`.
 fn legacy_upload(mut request: Request, folder: &Path, name: &str, stats: &Stats) -> Result<()> {
     let dest = folder.join(name);
@@ -1100,7 +1100,7 @@ fn append_upload(
 
 /// CRC-32 (IEEE / zlib, table-driven) over a whole file. Matches the streaming
 /// crc32 the web client computes, so the two can be compared to verify an upload
-/// arrived intact. Detects truncation, gaps, overlaps and bit-flips — the real
+/// arrived intact. Detects truncation, gaps, overlaps and bit-flips - the real
 /// risks on flaky Wi-Fi (this is a corruption check, not a security primitive).
 fn crc32_file(path: &Path) -> io::Result<u32> {
     let table = crc32_table();
@@ -1245,7 +1245,7 @@ fn normalize_rel(rel: &str) -> String {
         .join("/")
 }
 
-/// Result and scan caps for recursive search — keeps a huge tree from stalling.
+/// Result and scan caps for recursive search - keeps a huge tree from stalling.
 const SEARCH_MAX_RESULTS: usize = 300;
 const SEARCH_MAX_SCANNED: usize = 30_000;
 
@@ -1598,7 +1598,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A client request must bump `requests_seen()` — the signal the front-ends
+    /// A client request must bump `requests_seen()` - the signal the front-ends
     /// use to decide whether any device has reached the host (AP-isolation hint).
     #[test]
     fn requests_seen_counts_client_requests() {
@@ -1704,7 +1704,7 @@ mod tests {
     }
 
     /// A finished upload's persisted history row must carry its file path (last
-    /// TSV field), so "Open location" works after a restart — same as downloads.
+    /// TSV field), so "Open location" works after a restart - same as downloads.
     #[test]
     fn history_saves_upload_path() {
         let _g = port_guard();
@@ -1939,7 +1939,7 @@ mod tests {
         send_raw(port, &head, full);
         h.stop();
 
-        // Restart with the same history file — the record must be reloaded.
+        // Restart with the same history file - the record must be reloaded.
         let (_i2, h2) = spawn(cfg()).expect("rebind");
         let list = h2.transfers();
         assert!(

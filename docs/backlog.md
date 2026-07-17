@@ -1,45 +1,45 @@
-# zap — Backlog
+# zap - Backlog
 
 > Working backlog. Detail/context lives in `docs/HANDOFF.md`. Ordered roughly
 > Now → Next → Later → Ideas. Check items off as they land.
 
 ---
 
-## Now — reliability (the paid pitch's backbone)
+## Now - reliability (the paid pitch's backbone)
 
 Reliability is what zap sells ("a cross-platform AirDrop that actually works").
 Round 1 (done): host-side warns when no LAN IP + "same Wi-Fi / disable AP-client
 isolation" hint.
 
-**Round 2 — all done (2026-07-15):**
+**Round 2 - all done (2026-07-15):**
 
 - [x] **`SO_REUSEADDR`** on the listener so quick restarts never hit `EADDRINUSE`
       (belt-and-suspenders over the single-acceptor clean-shutdown). Listener now
       built via `socket2` with `SO_REUSEADDR` before bind, handed to `tiny_http`
       via `from_listener`. Regression test in `zap-core`.
-- [x] **AP / client-isolation detection** — host-side watchdog: while the server
+- [x] **AP / client-isolation detection** - host-side watchdog: while the server
       is reachable (has a LAN IP) but no client has connected (`requests_seen()==0`)
       after a 20s grace period, all three front-ends show a specific, actionable
-      "No device has connected yet — same Wi-Fi? AP/client isolation? guest net?"
+      "No device has connected yet - same Wi-Fi? AP/client isolation? guest net?"
       message instead of a silent hang. (Client-side detection is impossible: under
       isolation the served page never loads at all.)
-- [x] **Better `/api/list` failure message in the web UI** — distinguishes a
+- [x] **Better `/api/list` failure message in the web UI** - distinguishes a
       never-reached host (connectivity → actionable "Can't reach this device"
       card with Wi-Fi / AP-isolation bullets + Try again) from a server-returned
       folder error (keeps "Could not open this folder").
-- [x] Surface the host's reachability state — consistent green "Reachable at
+- [x] Surface the host's reachability state - consistent green "Reachable at
       <url>" across CLI / desktop / Android, with the URL made prominent.
 
 ---
 
-## Investigation — device pairing & faster transfer
+## Investigation - device pairing & faster transfer
 
 **Decision recorded (see HANDOFF rationale):** pairing itself does **not** make
-transfers faster — it's a **trust/convenience** feature. Real speed gains need a
+transfers faster - it's a **trust/convenience** feature. Real speed gains need a
 **router-bypass** transport, which is platform-limited and works against zap's
 "no app on the receiver" + "no discovery" differentiators.
 
-- [ ] **Pairing (convenience, on-brand)** — when zap is native on both ends:
+- [ ] **Pairing (convenience, on-brand)** - when zap is native on both ends:
       remember trusted devices, skip QR/login on reconnect, auto-reconnect on the
       same LAN, show a "known devices" list. **Do not market as "faster."**
 - [ ] **Cheap speed wins (no P2P):** parallel multi-file uploads; larger socket
@@ -53,20 +53,20 @@ transfers faster — it's a **trust/convenience** feature. Real speed gains need
 
 ---
 
-## Next — Play Store (Android is the paid product)
+## Next - Play Store (Android is the paid product)
 
 - [ ] Release **signing** + build **AAB** (upload keystore; Play App Signing).
 - [ ] `MANAGE_EXTERNAL_STORAGE` **declaration form** + demo video (approval risk;
       plan-B = SAF-only scoped storage if rejected).
-- [ ] **Privacy policy** URL (host on GitHub Pages) — "files stay on your LAN,
+- [ ] **Privacy policy** URL (host on GitHub Pages) - "files stay on your LAN,
       no data collected."
 - [ ] **Data-safety** form (no data collected/shared) + content rating.
-- [ ] **Closed testing** — 20 testers × 14 days (new personal-account rule).
+- [ ] **Closed testing** - 20 testers × 14 days (new personal-account rule).
 - [ ] Store listing: icon 512, feature graphic 1024×500, screenshots, copy.
 
 ---
 
-## Next — monetization
+## Next - monetization
 
 - [ ] Decide **paid-upfront (~₹50) vs free + Pro (IAP)**.
 - [ ] If IAP: pick the Pro line (e.g. no size cap, turbo mode, themes) and wire
@@ -76,9 +76,9 @@ transfers faster — it's a **trust/convenience** feature. Real speed gains need
 
 ---
 
-## Later — desktop distribution polish
+## Later - desktop distribution polish
 
-- [x] **Universal macOS binary** (x86_64 + aarch64 via `lipo`) — done
+- [x] **Universal macOS binary** (x86_64 + aarch64 via `lipo`) - done
       (2026-07-15). `build-dist.sh` builds both arches, lipos the CLI, swaps a
       fat binary into the `.app`, and repackages the `.dmg` via `hdiutil`.
 - [ ] **Code signing / notarization** (macOS Apple Developer; Windows cert) to
@@ -92,7 +92,7 @@ transfers faster — it's a **trust/convenience** feature. Real speed gains need
 
 - [ ] **iOS** app (not built).
 - [ ] **Optional mDNS auto-discovery** as a *convenience layer on top of* the
-      explicit-URL model (never a replacement — explicit URL stays the reliable
+      explicit-URL model (never a replacement - explicit URL stays the reliable
       default).
 - [ ] **Transfer history** (persist past transfers).
 - [ ] **Themes** / appearance options.

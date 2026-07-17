@@ -1,4 +1,4 @@
-// zap desktop — control panel that hosts the zap web server, mirroring the
+// zap desktop - control panel that hosts the zap web server, mirroring the
 // Android app. Remote devices connect via the URL/QR shown here.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -18,10 +18,10 @@ enum Tab {
     Transfers,
 }
 
-const ACCENT: Color32 = Color32::from_rgb(0xD9, 0x8A, 0x1E); // amber — reads on light & dark
+const ACCENT: Color32 = Color32::from_rgb(0xD9, 0x8A, 0x1E); // amber - reads on light & dark
 const ACCENT_BTN: Color32 = Color32::from_rgb(0xE0, 0x93, 0x22); // primary button fill
 const WARN: Color32 = Color32::from_rgb(0xC7, 0x3B, 0x2E);
-const OK: Color32 = Color32::from_rgb(0x2E, 0x9E, 0x57); // green — "reachable" confirmation
+const OK: Color32 = Color32::from_rgb(0x2E, 0x9E, 0x57); // green - "reachable" confirmation
 const BG_LIGHT: Color32 = Color32::from_rgb(0xF7, 0xF6, 0xF3); // light window / panel background
 const BG_DARK: Color32 = Color32::from_rgb(0x0D, 0x0D, 0x0F); // dark bg (matches the web/Android UI)
 
@@ -405,7 +405,7 @@ impl ZapApp {
             ui.add_space(8.0);
             if !reachable {
                 ui.label(
-                    RichText::new("⚠ No Wi-Fi detected — connect to Wi-Fi, then Stop and Start again.")
+                    RichText::new("⚠ No Wi-Fi detected - connect to Wi-Fi, then Stop and Start again.")
                         .size(12.5)
                         .color(WARN),
                 );
@@ -445,7 +445,7 @@ impl ZapApp {
                                 "If the other device can't open the link:\n\
                                  • make sure both are on the same Wi-Fi\n\
                                  • turn off your router's \u{201C}AP / client isolation\u{201D}\n\
-                                 • a guest network often blocks this — use the main one",
+                                 • a guest network often blocks this - use the main one",
                             )
                             .size(12.0),
                         );
@@ -551,7 +551,7 @@ fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]
     if rows.is_empty() {
         card(ui, |ui| {
             let msg = if running {
-                "No transfers yet — send or grab a file from another device."
+                "No transfers yet - send or grab a file from another device."
             } else {
                 "Start the server to see transfers here."
             };

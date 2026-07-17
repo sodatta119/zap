@@ -10,7 +10,7 @@
     color-scheme: light dark;
     --accent: #f5a623;
     --accent-2: #ff8c42;
-    /* Soft, warm light theme — not stark white */
+    /* Soft, warm light theme - not stark white */
     --bg: #f6f5f2;
     --bg-tint: #fbf7ef;
     --fg: #23211d;
@@ -266,7 +266,7 @@ async function loadDir(path) {
   let reached = false;
   try {
     const res = await fetch("/api/list?path=" + encodeURIComponent(path));
-    reached = true; // the host answered — any error below is folder-level, not connectivity
+    reached = true; // the host answered - any error below is folder-level, not connectivity
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -278,7 +278,7 @@ async function loadDir(path) {
     if (reached) {
       listEl.innerHTML = '<li class="empty">Could not open this folder.</li>';
     } else {
-      // The request never reached the host — a connectivity problem, not a bad folder.
+      // The request never reached the host - a connectivity problem, not a bad folder.
       showUnreachable(path);
     }
   }
@@ -473,7 +473,7 @@ function collectEntry(entry, prefix, out) {
       const readBatch = () => reader.readEntries(async (batch) => {
         if (!batch.length) { resolve(); return; }
         for (const child of batch) await collectEntry(child, dirPath, out);
-        readBatch(); // readEntries yields in batches — keep going until empty
+        readBatch(); // readEntries yields in batches - keep going until empty
       }, () => resolve());
       readBatch();
     } else { resolve(); }
@@ -512,7 +512,7 @@ function wirePause(pauseBtn, ctl, ui) {
 // Files stream to the host in chunks. The whole-file CRC-32 is computed as we
 // read, and sent with the final chunk so the host can verify the file arrived
 // intact ("✓ verified"). If the connection drops, we ask the host how many
-// bytes it already has (HEAD → X-Zap-Offset) and resume from there — so a 5 GB
+// bytes it already has (HEAD → X-Zap-Offset) and resume from there - so a 5 GB
 // transfer survives a Wi-Fi blip instead of starting over.
 const UPLOAD_CHUNK = 8 * 1024 * 1024; // 8 MB
 const MAX_RESUME_ATTEMPTS = 6;
@@ -590,7 +590,7 @@ async function uploadFolderEntries(entries) {
   const ctl = newCtl();
   wirePause(pauseBtn, ctl, ui);
 
-  // Upload files with bounded concurrency — a big win for folders of many small
+  // Upload files with bounded concurrency - a big win for folders of many small
   // files (each transfer is latency-bound, so overlapping them hides round-trips).
   const perDone = new Array(entries.length).fill(0);
   const bump = () => updateAgg(ui, perDone.reduce((a, b) => a + b, 0), totalBytes);
@@ -640,7 +640,7 @@ async function runFile(file, destDir, name, ctl, onProgress, onStatus) {
       return await sendFile(file, destDir, name, total, onProgress, ctl);
     } catch (e) {
       if (e && e.paused) continue;   // paused mid-chunk → loop back and wait
-      if (e && e.fatal) throw e;     // integrity failure — don't retry
+      if (e && e.fatal) throw e;     // integrity failure - don't retry
       if (++attempt > MAX_RESUME_ATTEMPTS) throw { fatal: true, msg: "failed" };
       onStatus("reconnecting…");
       await sleep(700 + attempt * 400);
@@ -771,7 +771,7 @@ function fmtEta(sec) {
 }
 
 // On load, show any uploads the host still holds a partial for (e.g. this page
-// was refreshed mid-transfer). The bytes are safe on the host — re-selecting the
+// was refreshed mid-transfer). The bytes are safe on the host - re-selecting the
 // same file resumes it from where it left off.
 async function loadIncoming() {
   let data;

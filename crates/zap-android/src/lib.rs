@@ -82,7 +82,7 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeStart<'local>(
     let config = ServeConfig {
         dir: PathBuf::from(dir),
         port: port as u16,
-        bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED), // 0.0.0.0 — reachable on the LAN
+        bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED), // 0.0.0.0 - reachable on the LAN
         auth,
         history: read_opt(&mut env, history).map(PathBuf::from),
     };
