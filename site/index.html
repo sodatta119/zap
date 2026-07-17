@@ -209,7 +209,7 @@
     </div>
 
     <div class="hero-visual">
-      <svg id="assembly" viewBox="0 0 600 560" fill="none" aria-hidden="true">
+      <svg id="assembly" viewBox="0 0 500 560" fill="none" aria-hidden="true">
         <defs>
           <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stop-color="#6d8bff"/><stop offset="1" stop-color="#9b6dff"/>
@@ -258,13 +258,6 @@
           <circle cx="250" cy="280" r="40" fill="url(#g)" opacity=".16" filter="url(#glow)"/>
           <circle cx="250" cy="280" r="24" fill="url(#g)"/>
           <circle cx="243" cy="272" r="8" fill="#fff" opacity=".35"/>
-        </g>
-
-        <g id="a-labels" font-family="ui-monospace,Menlo,monospace" font-size="12" letter-spacing=".04em">
-          <g class="lbl"><line x1="418" y1="168" x2="492" y2="150" stroke="url(#g)" stroke-width="1" opacity=".5"/><circle cx="418" cy="168" r="2.4" fill="url(#g)"/><text x="498" y="154" fill="var(--muted)">pair</text></g>
-          <g class="lbl"><line x1="440" y1="250" x2="498" y2="240" stroke="url(#g)" stroke-width="1" opacity=".5"/><circle cx="440" cy="250" r="2.4" fill="url(#g)"/><text x="504" y="244" fill="var(--muted)">stream</text></g>
-          <g class="lbl"><line x1="440" y1="320" x2="498" y2="330" stroke="url(#g)" stroke-width="1" opacity=".5"/><circle cx="440" cy="320" r="2.4" fill="url(#g)"/><text x="504" y="334" fill="var(--muted)">verify</text></g>
-          <g class="lbl"><line x1="410" y1="400" x2="486" y2="420" stroke="url(#g)" stroke-width="1" opacity=".5"/><circle cx="410" cy="400" r="2.4" fill="url(#g)"/><text x="492" y="424" fill="var(--muted)">private</text></g>
         </g>
       </svg>
     </div>
@@ -425,34 +418,26 @@
     .add({ targets: '#a-dash',     rotate: [80, 0],  scale: [0.5, 1], opacity: [0, 1], duration: 1200 }, 320)
     .add({ targets: '#a-aperture', rotate: [45, 0],  scale: [1.9, 1], opacity: [0, 1], duration: 1100 }, 400)
     .add({ targets: '#a-ring',     scale: [0.4, 1],  opacity: [0, 1], duration: 1000 }, 460)
-    .add({ targets: '#a-cross',    scale: [1.5, 1],  opacity: [0, 1], duration: 1000 }, 500)
-    .add({ targets: '#a-core',     scale: [0, 1],    opacity: [0, 1], duration: 900, easing: 'easeOutBack' }, 560)
-    .add({ targets: '#a-labels .lbl', opacity: [0, 1], translateX: [-8, 0], duration: 700, delay: anime.stagger(90) }, 900);
+    .add({ targets: '#a-cross',    scale: [1.5, 1],  opacity: [0, 0.22], duration: 1000 }, 500)
+    .add({ targets: '#a-core',     scale: [0, 1],    opacity: [0, 1], duration: 900, easing: 'easeOutBack' }, 560);
 
-  // Scroll-scrubbed explode / reassemble (the "camera" effect).
-  var boom = anime.timeline({ autoplay: false, easing: 'easeInOutSine' });
-  function part(t, mid) {
-    boom.add({ targets: t, keyframes: [
-      Object.assign({ duration: 500 }, mid),
-      { scale: 1, rotate: 0, opacity: mid._rest, duration: 500 },
-    ] }, 0);
+  // Scroll-driven explode / reassemble (the "camera" effect). Deterministic:
+  // a 0 -> 1 -> 0 "burst" taken from sin(scroll progress), applied synchronously
+  // via anime.set. Because rest (b=0) is always identity, scrolling back up always
+  // reassembles cleanly - no dependence on captured keyframe start values.
+  function explode(b) {
+    anime.set('#a-bezel',    { scale: 1 + 0.34 * b, rotate: 38 * b,  opacity: 1 - 0.15 * b });
+    anime.set('#a-dash',     { scale: 1 + 0.62 * b, rotate: -58 * b, opacity: 1 - 0.5 * b });
+    anime.set('#a-aperture', { scale: 1 + 0.85 * b, rotate: 66 * b,  opacity: 1 - 0.15 * b });
+    anime.set('#a-ring',     { scale: 1 + 0.22 * b, rotate: -30 * b, opacity: 1 - 0.2 * b });
+    anime.set('#a-cross',    { scale: 1 + 0.7 * b,  opacity: 0.22 * (1 - b) });
+    anime.set('#a-core',     { scale: 1 - 0.16 * b });
   }
-  part('#a-bezel',    { scale: 1.34, rotate: 38,  opacity: 0.85, _rest: 1 });
-  part('#a-dash',     { scale: 1.62, rotate: -58, opacity: 0.5,  _rest: 1 });
-  part('#a-aperture', { scale: 1.85, rotate: 66,  opacity: 0.85, _rest: 1 });
-  part('#a-ring',     { scale: 1.22, rotate: -30, opacity: 0.8,  _rest: 1 });
-  part('#a-cross',    { scale: 1.7,  rotate: 0,   opacity: 0.08, _rest: 1 });
-  part('#a-core',     { scale: 0.84, rotate: 0,   opacity: 1,    _rest: 1 });
-  boom.add({ targets: '#a-labels', keyframes: [
-    { translateX: 20, opacity: 0.15, duration: 500 },
-    { translateX: 0, opacity: 1, duration: 500 },
-  ] }, 0);
 
   function revealAssembly() {
     anime.set('#assembly', { opacity: 1, scale: 1 });
     anime.set(PARTS, { opacity: 1, scale: 1, rotate: 0 });
-    anime.set('#a-labels', { opacity: 1, translateX: 0 });
-    anime.set('#a-labels .lbl', { opacity: 1, translateX: 0 });
+    explode(0);
   }
 
   var ready = false;
@@ -460,7 +445,7 @@
     if (!ready) return;
     var span = window.innerHeight * 1.5; // gentle, gradual scrub
     var p = Math.min(1, Math.max(0, window.scrollY / span));
-    boom.seek(boom.duration * p);
+    explode(Math.sin(p * Math.PI)); // 0 at top, peak mid, back to 0 -> always reassembles
   }
   function activate() { if (!ready) { ready = true; onScroll(); } }
   intro.finished.then(activate);
