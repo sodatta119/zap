@@ -16,7 +16,7 @@
 ## 2. What Zap is (one paragraph)
 
 **Zap** = lightning-fast, private **file/folder transfer over local Wi-Fi**. One
-device runs an HTTP server (Rust `zap-core`); the other opens a URL / scans a QR in
+device runs an HTTP server (Rust `znet-core`); the other opens a URL / scans a QR in
 **any browser - no app on the receiver**. The differentiator is **reliability**: it
 uses **explicit URL/QR pairing, never mDNS/BLE/multicast discovery** (which home
 routers quietly break). Cross-platform (Android/macOS/Windows/Linux from one Rust
@@ -34,7 +34,7 @@ free/open-core.
   `.with_chunked_threshold(usize::MAX)`); **`DELETE /upload` + "clear ×"** to discard
   interrupted uploads; **"Open location" fallback** (`reveal_target` / `revealTarget`
   → `<shared dir>/<name>`) so received files resolve even for old history rows.
-  13 `zap-core` tests + 1 `zap-desktop` test, all green.
+  13 `znet-core` tests + 1 `zap-desktop` test, all green (run from `networking/`).
 - **Landing site** (`site/`, Cloudflare Pages, git-connected to `main`, live at
   **https://zap.sodatta.workers.dev**): screenshots under each "how it works" step,
   **favicon** (`site/favicon.svg` + `apple-touch-icon.png`). The public **Android

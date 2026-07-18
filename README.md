@@ -34,10 +34,10 @@ brew install android-platform-tools
 
 `zap` finds `adb` via `$ZAP_ADB`, then `$ANDROID_HOME/platform-tools/adb`, then `$PATH`.
 
-Build:
+Build (the Cargo workspace lives under `networking/`, the zOrigin category layout):
 
 ```sh
-cargo build --release
+cd networking && cargo build --release
 ```
 
 ## Usage
@@ -71,27 +71,30 @@ Options: `--dir` (default `.`), `--port` (default `8080`), `--bind`
 ## Architecture
 
 zap is a Cargo **workspace** so the same core logic can back multiple front
-ends - the desktop CLI today, an Android app next.
+ends - the desktop CLI today, an Android app next. The repo uses the zOrigin
+category layout: the workspace lives under `networking/` (category #1), with
+the whole-company site at repo-top `site/`.
 
 ```
-crates/
-├── zap-core/            # platform-neutral logic; no terminal/UI concerns
-│   ├── src/transport/   #   Transport trait + AdbTransport (host-driven)
-│   │   ├── mod.rs       #     trait, Device, RemoteEntry
-│   │   └── adb.rs       #     shells out to `adb`
-│   └── src/web/         #   web transport (server-mode)
-│       ├── mod.rs       #     tiny_http server: serve(config, on_ready)
-│       └── index.html   #     phone-facing page, embedded via include_str!
-├── zap-cli/             # desktop CLI binary (`zap`)
-│   ├── src/main.rs      #   dispatch, device resolution, banner + QR
-│   └── src/cli.rs       #   clap command definitions
-└── zap-desktop/         # desktop GUI app (egui) - the "control panel"
-    └── src/main.rs      #   start/stop, URL + QR, folder picker, secure
+networking/              # category #1 (Cargo workspace root)
+└── crates/
+    ├── znet-core/       # platform-neutral logic; no terminal/UI concerns
+    │   ├── src/transport/   #   Transport trait + AdbTransport (host-driven)
+    │   │   ├── mod.rs       #     trait, Device, RemoteEntry
+    │   │   └── adb.rs       #     shells out to `adb`
+    │   └── src/web/         #   web transport (server-mode)
+    │       ├── mod.rs       #     tiny_http server: serve(config, on_ready)
+    │       └── index.html   #     phone-facing page, embedded via include_str!
+    ├── zap-cli/         # desktop CLI binary (`zap`)
+    │   ├── src/main.rs      #   dispatch, device resolution, banner + QR
+    │   └── src/cli.rs       #   clap command definitions
+    └── zap-desktop/     # desktop GUI app (egui) - the "control panel"
+        └── src/main.rs      #   start/stop, URL + QR, folder picker, secure
 ```
 
 Design rules that keep it multi-platform:
 
-- **`zap-core` does no presentation.** `web::serve` takes an `on_ready`
+- **`znet-core` does no presentation.** `web::serve` takes an `on_ready`
   callback and hands back a `ServerInfo` (share dir, port, LAN IP, `url()`);
   the *caller* decides how to show it. The CLI prints a banner + terminal QR;
   an Android app will render its own UI. The terminal-only `qrcode` dependency
@@ -105,18 +108,19 @@ The web transport already covers every device pairing without per-OS code: any
 device can run the server, and the client is always just a browser.
 
 - **macOS / Windows / Linux** - a `zap` CLI and a `zap-desktop` GUI app, both
-  built from one `cargo build` (`zap-core` uses only portable `std` +
+  built from one `cargo build` (`znet-core` uses only portable `std` +
   `tiny_http`). Distributed via GitHub.
 - **Android** - the phone hosts the server itself, via a Kotlin app over JNI.
 
 ### Desktop GUI
 
-`crates/zap-desktop` is an [egui](https://github.com/emilk/egui) app: a small
-control panel (start/stop, share-folder picker, "require password", live URL +
-scannable QR) that calls `zap_core::web::spawn`. Other devices connect through
-the browser at the shown URL.
+`networking/crates/zap-desktop` is an [egui](https://github.com/emilk/egui) app:
+a small control panel (start/stop, share-folder picker, "require password", live
+URL + scannable QR) that calls `znet_core::web::spawn`. Other devices connect
+through the browser at the shown URL.
 
 ```sh
+cd networking
 cargo run --release --package zap-desktop     # run locally
 cargo bundle --release --package zap-desktop  # macOS .app + .dmg (needs cargo-bundle)
 ```
@@ -128,9 +132,9 @@ time; Windows users click "More info → Run anyway" past SmartScreen.)
 
 ### Android
 
-`crates/zap-android` is a `cdylib` that exposes `zap_core::web::spawn` to Kotlin
-through three JNI calls (`nativeStart` / `nativeUrl` / `nativeStop`). A
-foreground service keeps the server alive on the home Wi-Fi. Because `zap-core`
+`networking/crates/zap-android` is a `cdylib` that exposes `znet_core::web::spawn`
+to Kotlin through three JNI calls (`nativeStart` / `nativeUrl` / `nativeStop`). A
+foreground service keeps the server alive on the home Wi-Fi. Because `znet-core`
 is presentation-free, the phone runs the exact same server code as the desktop.
 
 Building the `.so` needs the Android toolchain (kept out of the default desktop
@@ -141,7 +145,8 @@ build):
 rustup target add aarch64-linux-android armv7-linux-androideabi \
                   x86_64-linux-android i686-linux-android
 cargo install cargo-ndk
-# with Android Studio's NDK installed and $ANDROID_NDK_HOME set:
-cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs \
+# with Android Studio's NDK installed and $ANDROID_NDK_HOME set (run from networking/):
+cd networking
+cargo ndk -t arm64-v8a -t armeabi-v7a -o android/zap/app/src/main/jniLibs \
     build -p zap-android --release
 ```

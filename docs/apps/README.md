@@ -38,11 +38,11 @@ machine). All start with **Z** by design.
 
 ## Shared core (do this as the family grows)
 
-Extract Zap's reusable networking into an open-source crate - working name
-**`zero`** (zero-config LAN core) or `znet`:
+Zap's reusable networking now lives in the shared crate **`znet-core`**
+(`networking/crates/znet-core`), the networking category's engine:
 
 - **Pairing**: QR / URL / one-time token (see Zap's `ServerInfo::url_with_key()`
-  and the `?k=<token>` auto-login in `crates/zap-core/src/web/mod.rs`).
+  and the `?k=<token>` auto-login in `networking/crates/znet-core/src/web/mod.rs`).
 - **LAN HTTP transport** + the **no-app browser client** pattern.
 - **Presence** (which paired devices are currently connected - needs SSE/long-poll,
   **not yet in Zap**; add it to the core when building Zulu).
@@ -56,14 +56,14 @@ Zap and Zulu reuse this heavily; Zod and Zeus barely touch it (they're a separat
 
 **Do not reinvent what Zap already solved.** When building any Z-app, refer to:
 
-- **Core server / protocol** - `crates/zap-core/src/web/mod.rs` (serve/spawn,
+- **Core server / protocol** - `networking/crates/znet-core/src/web/mod.rs` (serve/spawn,
   `ServerHandle`, auth/session cookie, pairing key, resumable upload, `Range`
   download, folder zip, transfer stats + history).
-- **Web client** - `crates/zap-core/src/web/index.html` (SPA patterns: upload with
+- **Web client** - `networking/crates/znet-core/src/web/index.html` (SPA patterns: upload with
   progress/pause/resume, listing, search, dark theme).
-- **Desktop shell** - `crates/zap-desktop/src/main.rs` (egui, `tune_theme` light/dark,
-  `ZAP_SHOT` headless screenshot harness for verification).
-- **Android shell** - `android/` + `crates/zap-android` (JNI `NativeBridge`,
+- **Desktop shell** - `networking/crates/zap-desktop/src/main.rs` (egui, `tune_theme`
+  light/dark, `ZAP_SHOT` headless screenshot harness for verification).
+- **Android shell** - `networking/android/zap/` + `networking/crates/zap-android` (JNI `NativeBridge`,
   foreground `ZapService`, `MainActivity`; MIUI gotchas in `docs/HANDOFF.md` §7).
 - **Visual language** - amber accent (`#f5a623` / deeper `#D98A1E`), dark base
   `#0D0D0F`, the bolt mark, cards, `site/favicon.svg`. Each app may pick its own

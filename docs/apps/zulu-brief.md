@@ -28,7 +28,7 @@ everything stays in sync.
 
 ## 2. The Zap core you reuse (the important part)
 
-Zap's engine lives in **`crates/zap-core/src/web/mod.rs`** (presentation-free Rust;
+Zap's engine lives in **`networking/crates/znet-core/src/web/mod.rs`** (presentation-free Rust;
 deps are tiny: `tiny_http` + `anyhow` + `socket2` only). One device runs an HTTP
 server bound to `0.0.0.0:<port>`; other devices connect from **any browser** (or a
 native app). **Reuse this crate - do not rebuild the transport or pairing.**
@@ -38,7 +38,7 @@ Explicit-URL HTTP server on the LAN + a browser/native client, with QR/token
 pairing and a session cookie. No discovery layer, so it works when Quick
 Share / LocalSend can't.
 
-### Public API you'll call (from `zap-core::web`)
+### Public API you'll call (from `znet-core::web`)
 - `struct ServeConfig { dir, port, bind, auth: Option<Credentials>, history: Option<PathBuf> }`
 - `fn serve(config, on_ready: impl FnOnce(&ServerInfo)) -> Result<()>` - blocks; the
   caller presents connection info in `on_ready` (core prints nothing).
@@ -62,7 +62,7 @@ Share / LocalSend can't.
   shutdown. Listener built with **`SO_REUSEADDR`** (via `socket2`) so quick
   restarts never hit `EADDRINUSE`.
 - **Path safety**: `resolve_within(root, rel)` (rejects `..`), `is_plain_filename`.
-- **No-app browser client**: `crates/zap-core/src/web/index.html` is a single-file
+- **No-app browser client**: `networking/crates/znet-core/src/web/index.html` is a single-file
   SPA (`include_str!`) - dark theme, live progress, listing, search. Copy its
   patterns for Zulu's receiver page.
 
@@ -74,7 +74,7 @@ new clip to every connected device the moment it's copied. Build a
 - `GET /events` - the client opens it and holds it; the host streams `data: <json>`
   frames (new clip, presence change, history update).
 - This is the **presence/push primitive the whole family will reuse** (Zap's future
-  "trusted devices / presence" feature needs it too). Build it in `zap-core`, not
+  "trusted devices / presence" feature needs it too). Build it in `znet-core`, not
   bolted onto Zulu.
 - SSE is plain HTTP (works through the same `tiny_http` server, no new dep) and
   reconnects automatically in browsers (`EventSource`).
@@ -106,7 +106,7 @@ overclaim** - the audience includes networking pros.
 
 ## 4. Architecture
 
-- **Transport & pairing**: reuse `zap-core::web` - one device hosts, others connect
+- **Transport & pairing**: reuse `znet-core::web` - one device hosts, others connect
   (native app or a browser tab). Same QR / URL / `?k=` token pairing.
 - **Live delivery**: the new **SSE** primitive (§2) - host → every connected device.
 - **State**: an in-memory ring of recent clips on the host + optional small on-disk
@@ -150,7 +150,7 @@ transfer (that's Zap - link to it).
 
 **Desktop ↔ desktop text/link sync over the LAN via SSE + pairing:** copy on A →
 appears on B, auto-pasted. Then add the **Android share-target sender** and the
-**tap-to-copy receiver**. Build the SSE/presence primitive in `zap-core` so Zap can
+**tap-to-copy receiver**. Build the SSE/presence primitive in `znet-core` so Zap can
 reuse it later.
 
 ---
@@ -159,10 +159,10 @@ reuse it later.
 
 | You want... | Look at |
 | --- | --- |
-| Server, pairing, session auth, endpoints | `crates/zap-core/src/web/mod.rs` |
-| No-app browser client (SPA) patterns | `crates/zap-core/src/web/index.html` |
-| Desktop egui shell + `tune_theme` + `ZAP_SHOT` harness | `crates/zap-desktop/src/main.rs` |
-| Android JNI shell (NativeBridge, foreground service) | `android/` + `crates/zap-android/src/lib.rs` |
+| Server, pairing, session auth, endpoints | `networking/crates/znet-core/src/web/mod.rs` |
+| No-app browser client (SPA) patterns | `networking/crates/znet-core/src/web/index.html` |
+| Desktop egui shell + `tune_theme` + `ZAP_SHOT` harness | `networking/crates/zap-desktop/src/main.rs` |
+| Android JNI shell (NativeBridge, foreground service) | `networking/android/zap/` + `networking/crates/zap-android/src/lib.rs` |
 | Build / dist (universal macOS, CI installers) | `scripts/build-dist.sh`, `.github/workflows/release.yml` |
 | Landing-page pattern (static, dark, per-accent) | `site/` (see `site/zulu/index.html` for Zulu's page) |
 | Full Zap technical handoff | `docs/HANDOFF.md` |

@@ -16,7 +16,7 @@ isolation" hint.
 - [x] **`SO_REUSEADDR`** on the listener so quick restarts never hit `EADDRINUSE`
       (belt-and-suspenders over the single-acceptor clean-shutdown). Listener now
       built via `socket2` with `SO_REUSEADDR` before bind, handed to `tiny_http`
-      via `from_listener`. Regression test in `zap-core`.
+      via `from_listener`. Regression test in `znet-core`.
 - [x] **AP / client-isolation detection** - host-side watchdog: while the server
       is reachable (has a LAN IP) but no client has connected (`requests_seen()==0`)
       after a 20s grace period, all three front-ends show a specific, actionable
@@ -72,7 +72,7 @@ transfers faster - it's a **trust/convenience** feature. Real speed gains need a
 - [ ] If IAP: pick the Pro line (e.g. no size cap, turbo mode, themes) and wire
       Play Billing.
 - [ ] Before public repo: **extract the paid Android app** out of the monorepo
-      (git history is permanent) so `zap-core`/`cli`/`desktop` can open-source.
+      (git history is permanent) so `znet-core`/`cli`/`desktop` can open-source.
 
 ---
 

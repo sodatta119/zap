@@ -39,7 +39,7 @@ say so. It still beats every "just works" tool that silently fails.
 
 ## Architecture
 
-- **Transport & pairing**: reuse Zap's core (`crates/zap-core/src/web`) - one device
+- **Transport & pairing**: reuse Zap's core (`networking/crates/znet-core/src/web`) - one device
   hosts, others connect (native app or an open browser tab). Same QR/URL/`?k=` token
   pairing.
 - **Live delivery**: **Server-Sent Events (SSE)** (or long-poll) from the host to
