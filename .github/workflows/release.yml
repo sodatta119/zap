@@ -28,16 +28,16 @@ jobs:
         run: cargo build --release --package zap-cli
       - name: Collect artifacts
         run: |
-          mkdir -p dist
-          cp networking/target/release/bundle/dmg/zap.dmg dist/zap-macos.dmg
-          cp networking/target/release/bundle/dmg/Zulu.dmg dist/zulu-macos.dmg
-          cp networking/target/release/zap dist/zap-macos-cli
+          mkdir -p dist/zap dist/zulu
+          cp networking/target/release/bundle/dmg/zap.dmg dist/zap/zap-macos.dmg
+          cp networking/target/release/bundle/dmg/Zulu.dmg dist/zulu/zulu-macos.dmg
+          cp networking/target/release/zap dist/zap/zap-macos-cli
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/zap-macos.dmg
-            dist/zulu-macos.dmg
-            dist/zap-macos-cli
+            dist/zap/zap-macos.dmg
+            dist/zulu/zulu-macos.dmg
+            dist/zap/zap-macos-cli
 
   windows:
     runs-on: windows-latest
@@ -54,20 +54,18 @@ jobs:
       - name: Package zips
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          # Zap (file transfer): GUI + CLI.
-          New-Item -ItemType Directory -Force dist/zap | Out-Null
-          Copy-Item networking/target/release/zap-desktop.exe dist/zap/
-          Copy-Item networking/target/release/zap.exe dist/zap/zap-cli.exe
-          Compress-Archive -Path dist/zap/* -DestinationPath dist/zap-windows.zip -Force
+          New-Item -ItemType Directory -Force dist/zap, dist/zulu, staging/zap | Out-Null
+          # Zap (file transfer): GUI + CLI zipped together.
+          Copy-Item networking/target/release/zap-desktop.exe staging/zap/
+          Copy-Item networking/target/release/zap.exe staging/zap/zap-cli.exe
+          Compress-Archive -Path staging/zap/* -DestinationPath dist/zap/zap-windows.zip -Force
           # Zulu (clipboard sync): GUI only.
-          Copy-Item networking/target/release/zulu-desktop.exe dist/
-          Compress-Archive -Path dist/zulu-desktop.exe -DestinationPath dist/zulu-windows.zip -Force
+          Compress-Archive -Path networking/target/release/zulu-desktop.exe -DestinationPath dist/zulu/zulu-windows.zip -Force
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/zap-windows.zip
-            dist/zulu-windows.zip
+            dist/zap/zap-windows.zip
+            dist/zulu/zulu-windows.zip
 
   linux:
     runs-on: ubuntu-latest
@@ -90,19 +88,19 @@ jobs:
           cargo build --release --package zap-cli
       - name: Collect artifacts
         run: |
-          mkdir -p dist
-          cp networking/target/release/bundle/deb/zap*.deb dist/zap-linux.deb
-          cp networking/target/release/bundle/deb/[Zz]ulu*.deb dist/zulu-linux.deb
-          cp networking/target/release/zap-desktop dist/zap-linux
-          cp networking/target/release/zulu-desktop dist/zulu-linux
-          cp networking/target/release/zap dist/zap-linux-cli
-          tar -C dist -czf dist/zap-linux.tar.gz zap-linux zap-linux-cli
+          mkdir -p dist/zap dist/zulu
+          cp networking/target/release/bundle/deb/zap*.deb dist/zap/zap-linux.deb
+          cp networking/target/release/bundle/deb/[Zz]ulu*.deb dist/zulu/zulu-linux.deb
+          cp networking/target/release/zap-desktop dist/zap/zap-linux
+          cp networking/target/release/zulu-desktop dist/zulu/zulu-linux
+          cp networking/target/release/zap dist/zap/zap-linux-cli
+          tar -C dist/zap -czf dist/zap/zap-linux.tar.gz zap-linux zap-linux-cli
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/zap-linux.deb
-            dist/zulu-linux.deb
-            dist/zap-linux.tar.gz
+            dist/zap/zap-linux.deb
+            dist/zulu/zulu-linux.deb
+            dist/zap/zap-linux.tar.gz
 
   android:
     runs-on: ubuntu-latest
@@ -119,8 +117,8 @@ jobs:
         run: ./gradlew :app:assembleDebug --no-daemon
       - name: Collect artifact
         run: |
-          mkdir -p dist
-          cp networking/android/zulu/app/build/outputs/apk/debug/app-debug.apk dist/zulu-android.apk
+          mkdir -p dist/zulu
+          cp networking/android/zulu/app/build/outputs/apk/debug/app-debug.apk dist/zulu/zulu-android.apk
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/zulu-android.apk
+          files: dist/zulu/zulu-android.apk
