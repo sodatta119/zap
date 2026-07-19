@@ -66,18 +66,29 @@ Share / LocalSend can't.
   SPA (`include_str!`) - dark theme, live progress, listing, search. Copy its
   patterns for Zulu's receiver page.
 
-### What Zap does NOT have yet - you must build it
-**Live push / presence.** Zap is request/response; Zulu needs the host to *push* a
-new clip to every connected device the moment it's copied. Build a
-**Server-Sent Events (SSE)** endpoint (or long-poll fallback) in the shared core:
+### Live push / presence - BUILT in the core (2026-07-19)
+**Server-Sent Events (SSE).** Zap is request/response; Zulu needs the host to
+*push* a new clip to every connected device the moment it's copied. This primitive
+now exists in the shared core - use it, don't rebuild it:
 
-- `GET /events` - the client opens it and holds it; the host streams `data: <json>`
-  frames (new clip, presence change, history update).
-- This is the **presence/push primitive the whole family will reuse** (Zap's future
-  "trusted devices / presence" feature needs it too). Build it in `znet-core`, not
-  bolted onto Zulu.
-- SSE is plain HTTP (works through the same `tiny_http` server, no new dep) and
-  reconnects automatically in browsers (`EventSource`).
+- **`GET /events`** - the client opens it and holds it; the host streams
+  `data: <json>` frames. Behind the same session/`?k=` pairing gate as everything
+  else. Served by `web::serve_events`, which flushes each frame immediately (plain
+  `Request::respond` buffers, so it takes the raw writer and flushes per frame).
+- **`web::EventHub`** (`web/events.rs`) - clone-cheap handle over the connected
+  clients. `hub.broadcast(&Event::named("clip", json))` fans a frame out to all.
+  Get the server's hub via **`ServerHandle::events()`** and broadcast a clip from
+  wherever your app captures one.
+- **Presence is automatic**: connect/disconnect broadcasts an `event: presence`
+  frame with `{"count":N}`; `EventHub::client_count()` reads it directly.
+- **`web::Event`** encodes the SSE wire format (multi-line `data:`, optional
+  `event:`/`id:`). A 15s heartbeat comment keeps NAT/proxies from dropping idle
+  connections and lets the server notice a departed client (drop -> presence
+  cleanup). Reconnects automatically in browsers via `EventSource`.
+- This is the **presence/push primitive the whole family reuses** (Zap's future
+  "trusted devices / presence" feature too). No new dependency - plain HTTP over
+  the existing `tiny_http` server. Covered by unit + end-to-end socket tests in
+  `znet-core` (`cargo test -p znet-core --lib`).
 
 ---
 
@@ -146,12 +157,34 @@ identifiers lowercase.
 No cloud, no accounts, no background-clipboard hacks that fight the OS, no file
 transfer (that's Zap - link to it).
 
-## 9. First milestone (prove it end-to-end)
+## 9. First milestone - DONE (2026-07-19)
 
 **Desktop ↔ desktop text/link sync over the LAN via SSE + pairing:** copy on A →
-appears on B, auto-pasted. Then add the **Android share-target sender** and the
-**tap-to-copy receiver**. Build the SSE/presence primitive in `znet-core` so Zap can
-reuse it later.
+appears on B, auto-pasted. ✅ **Shipped and verified.**
+
+- **`zulu-desktop`** (`networking/crates/zulu-desktop`) - egui shell (Zulu-blue
+  theme, `ZULU_SHOT` screenshot harness mirroring Zap's). Two modes: **Host**
+  (runs `web::spawn`, shows URL + QR) and **Join** (paste the host URL). Both run
+  the same `sync.rs` engine.
+- **`sync.rs`** - talks to the host's `znet-core` server over plain HTTP (std
+  only, no HTTP dep). A **receiver** thread holds `GET /events` open and writes
+  incoming `clip` frames to the OS clipboard (`arboard`); a **sender** thread
+  polls the clipboard and `POST`s changes to `/clip`. A content-based guard
+  breaks the echo loop. Presence count comes from the `presence` frames.
+- **Core additions:** `POST /clip` (store + broadcast) and `GET /clips`
+  (backfill) in `znet-core::web`, on top of the SSE `EventHub`.
+- **Verified end-to-end on the real macOS clipboard:** a remote `POST /clip`
+  landed in `pbpaste` (receive), and a local `pbcopy` was pushed to the host and
+  showed in `GET /clips` (send). Plus 25 core tests + the app's unit tests, all
+  green.
+
+**Next:** the **Android share-target sender** and **tap-to-copy receiver**;
+optional clip-history backfill on connect (`GET /clips` is ready); then small
+images and pinned snippets.
+
+> Run it: `cargo run -p zulu-desktop` on two machines on the same Wi-Fi - one
+> Host, one Join with the shown URL. (Milestone server is open/no-auth; the `?k=`
+> pairing key and TLS are later phases.)
 
 ---
 
@@ -162,6 +195,8 @@ reuse it later.
 | Server, pairing, session auth, endpoints | `networking/crates/znet-core/src/web/mod.rs` |
 | No-app browser client (SPA) patterns | `networking/crates/znet-core/src/web/index.html` |
 | Desktop egui shell + `tune_theme` + `ZAP_SHOT` harness | `networking/crates/zap-desktop/src/main.rs` |
+| **Zulu desktop app (shell + sync engine)** | `networking/crates/zulu-desktop/src/{main,sync}.rs` |
+| **Clip publish/history + SSE** (core) | `networking/crates/znet-core/src/web/{clips,events}.rs` + `mod.rs` routes |
 | Android JNI shell (NativeBridge, foreground service) | `networking/android/zap/` + `networking/crates/zap-android/src/lib.rs` |
 | Build / dist (universal macOS, CI installers) | `scripts/build-dist.sh`, `.github/workflows/release.yml` |
 | Landing-page pattern (static, dark, per-accent) | `site/` (see `site/zulu/index.html` for Zulu's page) |

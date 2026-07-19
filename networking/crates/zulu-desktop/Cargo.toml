@@ -1,0 +1,27 @@
+[package]
+name = "zulu-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop app for Zulu - clipboard / link / snippet sync over the LAN"
+
+[[bin]]
+name = "zulu-desktop"
+path = "src/main.rs"
+
+[dependencies]
+znet-core.workspace = true
+anyhow.workspace = true
+qrcode.workspace = true
+eframe = "0.29"
+dirs = "5"
+# Cross-platform OS clipboard read/write. Reading the clipboard is not in std;
+# egui can only read via paste events, so Zulu needs a real clipboard crate to
+# poll for local copies on desktop.
+arboard = "3"
+
+[package.metadata.bundle]
+name = "Zulu"
+identifier = "com.zulu.sync"
+short_description = "Clipboard sync over your local Wi-Fi"
+category = "public.app-category.utilities"

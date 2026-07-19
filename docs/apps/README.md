@@ -44,8 +44,12 @@ Zap's reusable networking now lives in the shared crate **`znet-core`**
 - **Pairing**: QR / URL / one-time token (see Zap's `ServerInfo::url_with_key()`
   and the `?k=<token>` auto-login in `networking/crates/znet-core/src/web/mod.rs`).
 - **LAN HTTP transport** + the **no-app browser client** pattern.
-- **Presence** (which paired devices are currently connected - needs SSE/long-poll,
-  **not yet in Zap**; add it to the core when building Zulu).
+- **Live push / presence** (SSE) - **built** in `znet-core::web` (the `EventHub`
+  in `web/events.rs`, served at `GET /events`, reachable via
+  `ServerHandle::events()`). The host pushes `data:` frames to every connected
+  device; connect/disconnect broadcasts a `presence` frame with the live client
+  count. Zulu broadcasts clips through it; Zap's future trusted-devices view
+  reuses the same channel.
 - **Resumable, crc32-verified transfer** (Zap's `.zap-part-` + `HEAD` offset +
   `X-Zap-Crc32` protocol).
 

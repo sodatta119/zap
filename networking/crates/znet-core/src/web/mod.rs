@@ -24,6 +24,11 @@ use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+mod clips;
+mod events;
+pub use clips::{Clip, ClipStore};
+pub use events::{Event, EventHub};
+
 const INDEX_HTML: &str = include_str!("index.html");
 const LOGIN_HTML: &str = include_str!("login.html");
 
@@ -97,6 +102,7 @@ pub struct ServerHandle {
     server: Arc<Server>,
     acceptor: Option<thread::JoinHandle<()>>,
     stats: Arc<Stats>,
+    hub: EventHub,
 }
 
 /// Direction of a transfer, from the server's point of view.
@@ -325,6 +331,14 @@ impl ServerHandle {
             .collect()
     }
 
+    /// A handle to this server's [`EventHub`] for pushing live updates to every
+    /// connected `GET /events` client. This is the family's push/presence
+    /// primitive: Zulu broadcasts new clips through it, and Zap's future
+    /// trusted-devices view will reuse the same channel. Clone-cheap.
+    pub fn events(&self) -> EventHub {
+        self.hub.clone()
+    }
+
     /// Stop the server and wait until the listening socket is released, so the
     /// port is free to bind again immediately (e.g. an app restart).
     pub fn stop(mut self) {
@@ -361,8 +375,10 @@ pub fn serve(config: ServeConfig, on_ready: impl FnOnce(&ServerInfo)) -> Result<
     on_ready(&info);
     let auth = Arc::new(auth);
     let stats = Arc::new(Stats::new(config.history.clone()));
+    let hub = EventHub::new();
+    let clips = Arc::new(ClipStore::new());
     // Use the calling thread as the acceptor; blocks until the process exits.
-    accept_loop(&server, &dir, &auth, &stats);
+    accept_loop(&server, &dir, &auth, &stats, &hub, &clips);
     Ok(())
 }
 
@@ -376,12 +392,16 @@ pub fn spawn(config: ServeConfig) -> Result<(ServerInfo, ServerHandle)> {
     info.auth_token = auth.as_ref().map(|a| a.token.clone());
     let auth = Arc::new(auth);
     let stats = Arc::new(Stats::new(config.history.clone()));
+    let hub = EventHub::new();
+    let clips = Arc::new(ClipStore::new());
     let acceptor = {
         let server = Arc::clone(&server);
         let dir = Arc::clone(&dir);
         let auth = Arc::clone(&auth);
         let stats = Arc::clone(&stats);
-        thread::spawn(move || accept_loop(&server, &dir, &auth, &stats))
+        let hub = hub.clone();
+        let clips = Arc::clone(&clips);
+        thread::spawn(move || accept_loop(&server, &dir, &auth, &stats, &hub, &clips))
     };
     Ok((
         info,
@@ -389,6 +409,7 @@ pub fn spawn(config: ServeConfig) -> Result<(ServerInfo, ServerHandle)> {
             server,
             acceptor: Some(acceptor),
             stats,
+            hub,
         },
     ))
 }
@@ -445,6 +466,8 @@ fn accept_loop(
     dir: &Arc<PathBuf>,
     auth: &Arc<Option<Auth>>,
     stats: &Arc<Stats>,
+    hub: &EventHub,
+    clips: &Arc<ClipStore>,
 ) {
     for request in server.incoming_requests() {
         // A request arriving at all proves a client reached this host.
@@ -452,15 +475,24 @@ fn accept_loop(
         let dir = Arc::clone(dir);
         let auth = Arc::clone(auth);
         let stats = Arc::clone(stats);
+        let hub = hub.clone();
+        let clips = Arc::clone(clips);
         thread::spawn(move || {
-            if let Err(e) = handle(request, &dir, (*auth).as_ref(), &stats) {
+            if let Err(e) = handle(request, &dir, (*auth).as_ref(), &stats, &hub, &clips) {
                 eprintln!("zap: request error: {e:#}");
             }
         });
     }
 }
 
-fn handle(request: Request, dir: &Path, auth: Option<&Auth>, stats: &Arc<Stats>) -> Result<()> {
+fn handle(
+    request: Request,
+    dir: &Path,
+    auth: Option<&Auth>,
+    stats: &Arc<Stats>,
+    hub: &EventHub,
+    clips: &Arc<ClipStore>,
+) -> Result<()> {
     let method = request.method().clone();
     let raw_url = request.url().to_string();
     let (path, query) = split_query(&raw_url);
@@ -500,6 +532,15 @@ fn handle(request: Request, dir: &Path, auth: Option<&Auth>, stats: &Arc<Stats>)
 
     match (&method, path.as_str()) {
         (Method::Get, "/") => respond(request, html_response(INDEX_HTML)),
+        // Live push / presence stream (the family primitive). A client opens it
+        // and holds it; the host streams `data:` frames (new clip, presence
+        // change) via the `EventHub`. Zap doesn't emit yet; Zulu does.
+        (Method::Get, "/events") => serve_events(request, hub),
+        // Publish a clip: store it and broadcast it to every /events listener.
+        // Body is the raw clip text. Zulu's send path.
+        (Method::Post, "/clip") => handle_post_clip(request, clips, hub),
+        // Recent clips, for a device that just connected to backfill history.
+        (Method::Get, "/clips") => respond(request, json_response(&clips_json(clips))),
         (Method::Get, "/api/list") => {
             let rel = query_param(query, "path").map(decode_percent).unwrap_or_default();
             respond(request, json_response(&list_dir_json(dir, &rel)))
@@ -541,6 +582,86 @@ fn handle(request: Request, dir: &Path, auth: Option<&Auth>, stats: &Arc<Stats>)
         }
         _ => respond(request, Response::from_string("Not found").with_status_code(404)),
     }
+}
+
+/// Serve the `GET /events` SSE stream: subscribe to the hub and push each frame
+/// to the client the moment it is produced.
+///
+/// SSE only works if frames reach the socket *immediately*. `Request::respond`
+/// writes a reader body via `io::copy` into a 1 KiB `BufWriter` that is only
+/// flushed once the whole response finishes - but an SSE stream never finishes,
+/// so frames would sit buffered for real-time push. We therefore take the raw
+/// writer with `into_writer`, write the response head ourselves, and **flush
+/// after every frame**. A failing write means the client vanished: we stop, drop
+/// the [`SseReader`], and its guard unregisters the client from presence.
+///
+/// The body has no `Content-Length` and isn't chunked - it's delimited by
+/// connection close, exactly what `text/event-stream` + `EventSource` expect.
+/// `X-Accel-Buffering: no` tells any reverse proxy not to buffer it either.
+fn serve_events(request: Request, hub: &EventHub) -> Result<()> {
+    let mut reader = hub.subscribe();
+    let mut w = request.into_writer();
+    let head = "HTTP/1.1 200 OK\r\n\
+        Content-Type: text/event-stream; charset=utf-8\r\n\
+        Cache-Control: no-cache\r\n\
+        Connection: keep-alive\r\n\
+        X-Accel-Buffering: no\r\n\
+        \r\n";
+    if w.write_all(head.as_bytes()).and_then(|_| w.flush()).is_err() {
+        return Ok(());
+    }
+    let mut buf = [0u8; 512];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break, // hub dropped (server shutting down)
+            Ok(n) => {
+                // Flush each frame so push is genuinely live; a write error
+                // means the client is gone.
+                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
+/// Largest clip body accepted, to bound memory from a hostile or buggy client.
+/// Clips are small text by design; images (later) get their own size handling.
+const MAX_CLIP_BYTES: u64 = 1 << 20; // 1 MiB
+
+/// `POST /clip`: the request body is the raw clip text. Store it in the ring and
+/// broadcast it to every `/events` listener as a `clip` event, so all paired
+/// devices receive it at once. Responds with the assigned id.
+fn handle_post_clip(mut request: Request, clips: &ClipStore, hub: &EventHub) -> Result<()> {
+    let mut body = String::new();
+    request
+        .as_reader()
+        .take(MAX_CLIP_BYTES)
+        .read_to_string(&mut body)
+        .ok();
+    if body.is_empty() {
+        return respond(request, Response::from_string("empty clip").with_status_code(400));
+    }
+    let clip = clips.push(body);
+    // The clip text may contain newlines; SSE `data:` framing handles that (each
+    // line becomes its own `data:` line), so no JSON escaping is needed here.
+    hub.broadcast(&Event::named("clip", clip.text.clone()).with_id(clip.id.to_string()));
+    respond(request, json_response(&format!("{{\"id\":{}}}", clip.id)))
+}
+
+/// JSON array of recent clips (oldest first) for `GET /clips` backfill.
+fn clips_json(clips: &ClipStore) -> String {
+    let mut out = String::from("[");
+    for (i, c) in clips.recent().iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("{{\"id\":{},\"text\":{}}}", c.id, json_string(&c.text)));
+    }
+    out.push(']');
+    out
 }
 
 fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Result<()> {
@@ -2042,6 +2163,133 @@ mod tests {
         assert!(lower.contains("content-range: bytes 2-5/10"), "should set Content-Range: {text}");
         // Body is the last thing after the header block.
         assert!(text.ends_with("2345"), "body should be the requested slice: {text:?}");
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end clip flow: one client holds `GET /events`; a `POST /clip` from
+    /// another lands as a live `clip` frame on the stream, and also shows up in
+    /// the `GET /clips` backfill. This is Zulu's core sync loop over real sockets.
+    #[test]
+    fn clip_post_broadcasts_and_backfills() {
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-clip-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (port, handle) = spawn_test_server(&dir);
+
+        // Subscriber holds the event stream open.
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .write_all(b"GET /events HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+            .expect("send");
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let read_until = |stream: &mut TcpStream, buf: &mut Vec<u8>, needle: &str| -> bool {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut tmp = [0u8; 1024];
+            while Instant::now() < deadline {
+                if String::from_utf8_lossy(buf).contains(needle) {
+                    return true;
+                }
+                match stream.read(&mut tmp) {
+                    Ok(0) => return false,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock
+                            || e.kind() == io::ErrorKind::TimedOut => {}
+                    Err(_) => return false,
+                }
+            }
+            String::from_utf8_lossy(buf).contains(needle)
+        };
+        let mut buf = Vec::new();
+        assert!(read_until(&mut stream, &mut buf, ": connected"), "stream opens");
+
+        // A different client publishes a (multi-line) clip.
+        let resp = send_raw(
+            port,
+            "POST /clip HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\nConnection: close\r\n\r\nline1\nline2",
+            b"",
+        );
+        let resp = String::from_utf8_lossy(&resp);
+        assert!(resp.contains("\"id\":0"), "POST returns the clip id: {resp}");
+
+        // It arrives live on the held-open stream, split into `data:` lines.
+        assert!(read_until(&mut stream, &mut buf, "event: clip"), "clip frame arrives");
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("data: line1"), "first line: {text}");
+        assert!(text.contains("data: line2"), "second line: {text}");
+
+        // And a fresh device can backfill it from /clips.
+        let clips = String::from_utf8_lossy(&send_raw(
+            port,
+            "GET /clips HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            b"",
+        ))
+        .into_owned();
+        assert!(clips.contains("\"id\":0"), "backfill has the clip: {clips}");
+        assert!(clips.contains("line1\\nline2"), "backfill JSON-escapes newlines: {clips}");
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end: a client opening `GET /events` gets an `text/event-stream`
+    /// response and receives frames the host broadcasts through the hub - the
+    /// live-push primitive Zulu is built on, proven over a real socket.
+    #[test]
+    fn events_endpoint_streams_broadcasts() {
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-sse-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (port, handle) = spawn_test_server(&dir);
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .write_all(b"GET /events HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+            .expect("send request");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set read timeout");
+
+        // Read until a marker appears (or we give up). The stream never closes,
+        // so we rely on the read timeout, not EOF.
+        let read_until = |stream: &mut TcpStream, buf: &mut Vec<u8>, needle: &str| -> bool {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut tmp = [0u8; 1024];
+            while Instant::now() < deadline {
+                if String::from_utf8_lossy(buf).contains(needle) {
+                    return true;
+                }
+                match stream.read(&mut tmp) {
+                    Ok(0) => return false,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock
+                            || e.kind() == io::ErrorKind::TimedOut => {}
+                    Err(_) => return false,
+                }
+            }
+            String::from_utf8_lossy(buf).contains(needle)
+        };
+
+        // Headers + the open-stream preamble arrive first.
+        let mut buf = Vec::new();
+        assert!(read_until(&mut stream, &mut buf, ": connected"), "stream should open");
+        let head = String::from_utf8_lossy(&buf).to_lowercase();
+        assert!(head.contains("content-type: text/event-stream"), "SSE content type: {head}");
+
+        // Now push a frame from the host side and watch it arrive on the wire.
+        handle.events().broadcast(&Event::named("clip", "hello over the wire"));
+        assert!(read_until(&mut stream, &mut buf, "event: clip"), "broadcast should arrive");
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("data: hello over the wire"), "frame payload: {text}");
 
         handle.stop();
         let _ = fs::remove_dir_all(&dir);

@@ -24,7 +24,7 @@ zOrigin
 | Product | Category | What it does | Status |
 | --- | --- | --- | --- |
 | **Zap** | networking | Cross-platform file & folder transfer over local Wi-Fi - the receiver just opens a link in a browser, no app needed | ✅ Live |
-| **Zulu** | networking | Clipboard & link sync - copy on one device, it's instantly on your others | Planned |
+| **Zulu** | networking | Clipboard & link sync - copy on one device, it's instantly on your others | 🚧 Desktop MVP (desktop↔desktop text sync working) |
 | **Zeus** | networking | Wake & power control - turn your PCs on and off from your phone | Planned |
 | **Zod** | networking | LAN recon - see and inspect everything on your Wi-Fi | Planned |
 | **Zeta** | networking | Phone as a trackpad for your computer | Planned |
@@ -33,7 +33,7 @@ zOrigin
 
 ```
 zorigin/
-├── networking/   # category #1: Cargo workspace (znet-core engine + Zap cli/desktop/android)
+├── networking/   # category #1: Cargo workspace (znet-core engine + Zap cli/desktop/android + Zulu desktop)
 │                 #   -> see networking/README.md for build, run, and app details
 ├── site/         # the zOrigin website (zorigin.net), served by Cloudflare.  / = zOrigin, /zap = Zap
 └── docs/         # roadmap, backlog, and per-product briefs (docs/apps/)

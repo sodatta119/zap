@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/znet-core", "crates/zap-cli", "crates/zap-desktop", "crates/zap-android"]
-# Desktop builds (`cargo build` from a GitHub checkout) build the CLI and the
-# GUI app. The Android JNI library is built explicitly, per-target, via cargo-ndk.
-default-members = ["crates/znet-core", "crates/zap-cli", "crates/zap-desktop"]
+members = ["crates/znet-core", "crates/zap-cli", "crates/zap-desktop", "crates/zap-android", "crates/zulu-desktop"]
+# Desktop builds (`cargo build` from a GitHub checkout) build the CLIs and the
+# GUI apps. The Android JNI library is built explicitly, per-target, via cargo-ndk.
+default-members = ["crates/znet-core", "crates/zap-cli", "crates/zap-desktop", "crates/zulu-desktop"]
 
 [workspace.package]
 version = "0.1.0"
