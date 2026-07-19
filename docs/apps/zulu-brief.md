@@ -1,5 +1,9 @@
 # Zulu - build brief (hand this to a build agent)
 
+> **Already building?** For the *current* state (what's shipped, file map, how to
+> build/run/verify, what's open), read **`docs/apps/zulu-handoff.md`** first -
+> this file is the original from-scratch brief, kept for context.
+>
 > Self-contained. You should be able to start building Zulu from **this file
 > alone** + the Zap source it points to. Zulu is app #2 in the zOrigin family
 > (after Zap). It reuses Zap's core heavily - the whole point is to NOT reinvent
