@@ -1,0 +1,16 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Zulu" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/zulu_blue</item>
+        <item name="colorPrimaryVariant">@color/zulu_blue</item>
+        <item name="colorSecondary">@color/zulu_blue_light</item>
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+    </style>
+
+    <!-- Used by the share-sheet activity: no window of its own. -->
+    <style name="Theme.Zulu.Transparent" parent="Theme.Zulu">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

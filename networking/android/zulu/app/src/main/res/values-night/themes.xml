@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Zulu" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/zulu_blue_light</item>
+        <item name="colorPrimaryVariant">@color/zulu_blue</item>
+        <item name="colorSecondary">@color/zulu_blue_light</item>
+        <item name="android:statusBarColor">@color/ink</item>
+    </style>
+</resources>
