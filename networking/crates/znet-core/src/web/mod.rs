@@ -288,6 +288,25 @@ impl Stats {
     /// attempt of the same file - reuse it so every chunk and every pause/resume
     /// shows as one continuous row instead of spawning a new one each time.
     fn begin_upload(&self, key: &str, name: &str, total: Option<u64>, path: &str) -> Arc<TransferState> {
+        self.begin_keyed(key, name, Direction::Upload, total, path)
+    }
+
+    /// Begin (or resume) a keyed download. The web client fetches a file in many
+    /// Range chunks; keying by the file path lets every chunk share one transfer
+    /// row (with the whole-file total) instead of one row per 8 MB chunk.
+    fn begin_download(&self, key: &str, name: &str, total: Option<u64>, path: &str) -> Arc<TransferState> {
+        self.begin_keyed(key, name, Direction::Download, total, path)
+    }
+
+    /// Reuse an unfinished transfer with the same `key`, else create a new one.
+    fn begin_keyed(
+        &self,
+        key: &str,
+        name: &str,
+        direction: Direction,
+        total: Option<u64>,
+        path: &str,
+    ) -> Arc<TransferState> {
         if let Ok(list) = self.transfers.lock() {
             if let Some(existing) = list
                 .iter()
@@ -297,7 +316,7 @@ impl Stats {
                 return Arc::clone(existing);
             }
         }
-        self.create(key.to_string(), name, Direction::Upload, total, path)
+        self.create(key.to_string(), name, direction, total, path)
     }
 
     fn create(
@@ -368,6 +387,24 @@ impl ServerHandle {
                 elapsed_secs: t.started.elapsed().as_secs_f64(),
             })
             .collect()
+    }
+
+    /// Remove one transfer from the activity list (and persisted history) by id.
+    /// For a Transfers view's per-row "clear" button.
+    pub fn remove_transfer(&self, id: u64) {
+        if let Ok(mut list) = self.stats.transfers.lock() {
+            list.retain(|t| t.id != id);
+        }
+        self.stats.save_history();
+    }
+
+    /// Clear finished (past) transfers, keeping any still in progress. For a
+    /// Transfers view's "Clear all" button.
+    pub fn clear_transfers(&self) {
+        if let Ok(mut list) = self.stats.transfers.lock() {
+            list.retain(|t| !t.finished.load(Ordering::Relaxed));
+        }
+        self.stats.save_history();
     }
 
     /// A handle to this server's [`EventHub`] for pushing live updates to every
@@ -804,24 +841,22 @@ fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Re
         None
     };
 
-    let transfer = stats.begin(
-        &filename,
-        Direction::Download,
-        Some(range.map_or(total, |(s, e)| e - s + 1)),
-        &path.to_string_lossy(),
-    );
+    // Coalesce the client's many Range chunks of one file into a single transfer
+    // row (keyed by path) whose total is the whole file - not one row per chunk.
+    let path_key = path.to_string_lossy().into_owned();
+    let transfer = stats.begin_download(&path_key, &filename, Some(total), &path_key);
 
-    let (status, body_len, content_range) = match range {
+    let (status, body_len, content_range, base) = match range {
         Some((start, end)) => {
             if file.seek(SeekFrom::Start(start)).is_err() {
                 return respond(request, Response::from_string("seek error").with_status_code(500));
             }
-            (206u16, end - start + 1, Some(format!("bytes {start}-{end}/{total}")))
+            (206u16, end - start + 1, Some(format!("bytes {start}-{end}/{total}")), start)
         }
-        None => (200, total, None),
+        None => (200, total, None, 0),
     };
 
-    let reader = CountingReader { inner: file.take(body_len), stats, transfer: &transfer };
+    let reader = DownloadReader { inner: file.take(body_len), stats, transfer: &transfer, base, read: 0 };
     let mut headers = vec![
         header("Content-Type", "application/octet-stream"),
         header("Content-Disposition", &disposition),
@@ -841,9 +876,13 @@ fn serve_download(request: Request, root: &Path, rel: &str, stats: &Stats) -> Re
     let response = Response::new(StatusCode(status), headers, reader, Some(body_len as usize), None)
         .with_chunked_threshold(usize::MAX);
     let result = respond(request, response);
-    transfer.finished.store(true, Ordering::Relaxed);
-    transfer.ok.store(true, Ordering::Relaxed);
-    stats.save_history();
+    // Only finish the coalesced transfer once the whole file has been delivered;
+    // otherwise it's just one chunk of a download still in progress.
+    if transfer.done.load(Ordering::Relaxed) >= total {
+        transfer.finished.store(true, Ordering::Relaxed);
+        transfer.ok.store(true, Ordering::Relaxed);
+        stats.save_history();
+    }
     result
 }
 
@@ -1421,16 +1460,24 @@ fn write_upload(
 }
 
 /// A reader that counts bytes into the global total and this transfer.
-struct CountingReader<'a, R> {
+/// Reader for a single-file download that may be served in many Range chunks
+/// coalesced into one transfer. Adds every byte to global throughput, but tracks
+/// per-transfer progress as the *absolute* contiguous offset (`base + read`) via
+/// `fetch_max`, so sequential chunks advance the bar over the whole file and a
+/// retried chunk never double-counts or rewinds it.
+struct DownloadReader<'a, R> {
     inner: R,
     stats: &'a Stats,
     transfer: &'a TransferState,
+    base: u64,
+    read: u64,
 }
-impl<R: Read> Read for CountingReader<'_, R> {
+impl<R: Read> Read for DownloadReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
+        self.read += n as u64;
         self.stats.bytes.fetch_add(n as u64, Ordering::Relaxed);
-        self.transfer.done.fetch_add(n as u64, Ordering::Relaxed);
+        self.transfer.done.fetch_max(self.base + self.read, Ordering::Relaxed);
         Ok(n)
     }
 }
@@ -2323,6 +2370,38 @@ mod tests {
         assert!(lower.contains("content-range: bytes 2-5/10"), "should set Content-Range: {text}");
         // Body is the last thing after the header block.
         assert!(text.ends_with("2345"), "body should be the requested slice: {text:?}");
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The web client downloads a file in many Range chunks; the host must show
+    /// ONE transfer (whole-file total, cumulative progress), finishing only once
+    /// the whole file has been delivered - not one row per chunk.
+    #[test]
+    fn download_chunks_coalesce_into_one_transfer() {
+        let _g = port_guard();
+        let dir = std::env::temp_dir().join(format!("zap-dlcoalesce-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f.bin"), b"0123456789").unwrap(); // 10 bytes
+        let (port, handle) = spawn_test_server(&dir);
+
+        // First half.
+        let _ = send_raw(port, "GET /download?path=f.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-4\r\nConnection: close\r\n\r\n", b"");
+        let t = handle.transfers();
+        let dl: Vec<_> = t.iter().filter(|x| x.direction == Direction::Download).collect();
+        assert_eq!(dl.len(), 1, "one download row after the first chunk");
+        assert_eq!(dl[0].total, Some(10), "total is the whole file, not the chunk");
+        assert_eq!(dl[0].done, 5, "progress = bytes delivered so far");
+        assert!(!dl[0].finished, "not finished until the whole file is delivered");
+
+        // Second half completes the file.
+        let _ = send_raw(port, "GET /download?path=f.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=5-9\r\nConnection: close\r\n\r\n", b"");
+        let t = handle.transfers();
+        let dl: Vec<_> = t.iter().filter(|x| x.direction == Direction::Download).collect();
+        assert_eq!(dl.len(), 1, "still ONE row, not one per chunk");
+        assert_eq!(dl[0].done, 10, "progress reached the full size");
+        assert!(dl[0].finished && dl[0].ok, "finished + ok once complete");
 
         handle.stop();
         let _ = fs::remove_dir_all(&dir);

@@ -136,6 +136,37 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeRequests(
     running.handle.requests_seen() as jlong
 }
 
+/// Remove one transfer (by id) from the activity list + persisted history.
+#[no_mangle]
+pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeRemoveTransfer(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    id: jlong,
+) {
+    if handle == 0 {
+        return;
+    }
+    // Safety: `handle` is a pointer produced by `nativeStart` and not yet freed.
+    let running = unsafe { &*(handle as *const Running) };
+    running.handle.remove_transfer(id as u64);
+}
+
+/// Clear finished (past) transfers, keeping any still in progress.
+#[no_mangle]
+pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeClearTransfers(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    if handle == 0 {
+        return;
+    }
+    // Safety: `handle` is a pointer produced by `nativeStart` and not yet freed.
+    let running = unsafe { &*(handle as *const Running) };
+    running.handle.clear_transfers();
+}
+
 /// Return the share URL (includes the pairing key when secured, so the
 /// recipient is signed in on open), or null for an invalid handle.
 #[no_mangle]

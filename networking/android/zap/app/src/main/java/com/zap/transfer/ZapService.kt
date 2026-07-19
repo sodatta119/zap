@@ -155,7 +155,7 @@ class ZapService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("zap is sharing files")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .build()
     }

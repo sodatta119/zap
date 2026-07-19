@@ -54,6 +54,18 @@
             android:layout_marginStart="8dp"
             android:textSize="13sp"
             android:textColor="#F5A623" />
+
+        <TextView
+            android:id="@+id/closeBtn"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_marginStart="6dp"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#8A8A90"
+            android:textSize="15sp"
+            android:contentDescription="Remove"
+            android:visibility="gone" />
     </LinearLayout>
 
     <ProgressBar

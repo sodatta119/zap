@@ -35,6 +35,12 @@ object NativeBridge {
      */
     external fun nativeRequests(handle: Long): Long
 
+    /** Remove one transfer (by id) from the activity list + persisted history. */
+    external fun nativeRemoveTransfer(handle: Long, id: Long)
+
+    /** Clear finished (past) transfers, keeping any still in progress. */
+    external fun nativeClearTransfers(handle: Long)
+
     /** Stop the server and release the handle. Safe to call with 0. */
     external fun nativeStop(handle: Long)
 }

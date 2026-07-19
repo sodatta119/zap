@@ -288,6 +288,22 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // "Clear all" (past transfers) header, shown when there's history to clear.
+        if (list.any { it.finished }) {
+            val clearAll = TextView(this).apply {
+                text = "Clear all"
+                setTextColor(0xFFF5A623.toInt())
+                textSize = 13f
+                gravity = android.view.Gravity.END
+                setPadding(6, 2, 6, 10)
+                setOnClickListener {
+                    NativeBridge.nativeClearTransfers(ZapState.handle)
+                    refreshTransfers()
+                }
+            }
+            transfersView.addView(clearAll)
+        }
+
         val now = SystemClock.elapsedRealtime()
         for (t in list) {
             val s = speeds.getOrPut(t.id) { Sample(now, t.done, 0.0) }
@@ -334,6 +350,17 @@ class MainActivity : AppCompatActivity() {
                 openBtn.setOnClickListener { openFile(target.absolutePath) }
             } else {
                 openBtn.visibility = View.GONE
+            }
+            // Per-row "clear" for a finished (past) transfer.
+            val closeBtn = row.findViewById<TextView>(R.id.closeBtn)
+            if (t.finished) {
+                closeBtn.visibility = View.VISIBLE
+                closeBtn.setOnClickListener {
+                    NativeBridge.nativeRemoveTransfer(ZapState.handle, t.id)
+                    refreshTransfers()
+                }
+            } else {
+                closeBtn.visibility = View.GONE
             }
             transfersView.addView(row)
         }
