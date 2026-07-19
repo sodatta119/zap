@@ -345,9 +345,11 @@ function renderList(entries) {
         downloadFolderZip(joinPath(currentPath, e.name));
       };
     } else {
-      el.href = "/download?path=" + encodeURIComponent(joinPath(currentPath, e.name));
-      el.setAttribute("download", e.name);
+      const fpath = joinPath(currentPath, e.name), fname = e.name, fsize = e.size;
+      el.href = "/download?path=" + encodeURIComponent(fpath); // fallback for right-click "save as"
+      el.setAttribute("download", fname);
       el.innerHTML = `<span class="ico">${FILE_SVG}</span><span class="label"></span><span class="meta">${fmtSize(e.size)}</span><span class="chev">⬇</span>`;
+      el.onclick = (ev) => { ev.preventDefault(); downloadFile(fpath, fname, fsize); };
     }
     el.querySelector(".label").textContent = e.name;
     li.appendChild(el);
@@ -417,8 +419,10 @@ function renderResults(entries) {
     if (e.dir) {
       el.onclick = () => { exitSearch(); loadDir(e.path); };
     } else {
-      el.href = "/download?path=" + encodeURIComponent(e.path);
-      el.setAttribute("download", e.name);
+      const fpath = e.path, fname = e.name, fsize = e.size;
+      el.href = "/download?path=" + encodeURIComponent(fpath); // fallback for right-click "save as"
+      el.setAttribute("download", fname);
+      el.onclick = (ev) => { ev.preventDefault(); downloadFile(fpath, fname, fsize); };
     }
     li.appendChild(el);
     listEl.appendChild(li);
@@ -517,6 +521,8 @@ function wirePause(pauseBtn, ctl, ui) {
 const UPLOAD_CHUNK = 8 * 1024 * 1024; // 8 MB
 const MAX_RESUME_ATTEMPTS = 6;
 const FOLDER_CONCURRENCY = 4; // files uploaded in parallel within a folder
+const DOWNLOAD_CHUNK = 8 * 1024 * 1024; // 8 MB - a dropped chunk only costs this much
+const MAX_DOWNLOAD_ATTEMPTS = 8;
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -690,6 +696,101 @@ function markDone(ui, verified) {
   ui.tag.classList.remove("err");
   ui.tag.classList.add("done");
   loadDir(currentPath);
+}
+
+// ---- Client-controlled, verified download ----
+// Instead of handing the file to the browser's download manager (which on a
+// flaky link can drop mid-stream and mislabel a truncated file as "done"), we
+// fetch it ourselves in Range chunks, retry any chunk that fails from its
+// offset, and only save once we've assembled EXACTLY `size` bytes. Chunks
+// accumulate into a growing Blob so RAM stays ~one chunk even for big files
+// (the browser backs the Blob with disk). On very large files the browser's
+// Blob store is the ceiling - that case wants the HTTPS + service-worker path.
+async function downloadFile(path, name, size) {
+  const { li, ui, pauseBtn } = makeRow(name);
+  const ctl = { paused: false, waiters: [], abort: null };
+  wireDownloadPause(pauseBtn, ctl, ui);
+
+  let offset = 0;
+  let blob = new Blob([]);
+  let attempts = 0;
+
+  while (offset < size) {
+    if (ctl.paused) { await new Promise((r) => ctl.waiters.push(r)); continue; }
+    const end = Math.min(offset + DOWNLOAD_CHUNK, size) - 1; // inclusive
+    try {
+      const ac = new AbortController();
+      ctl.abort = ac;
+      const res = await fetch("/download?path=" + encodeURIComponent(path), {
+        headers: { Range: "bytes=" + offset + "-" + end }, signal: ac.signal,
+      });
+      ctl.abort = null;
+      if (res.status !== 206 && res.status !== 200) throw new Error("HTTP " + res.status);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (res.status === 200 && offset === 0) {
+        // Server ignored Range and sent the whole file - accept it as complete.
+        blob = new Blob([buf]);
+        offset = buf.length;
+      } else {
+        if (buf.length !== end - offset + 1) throw new Error("short chunk");
+        blob = new Blob([blob, buf]); // grow (disk-backed), releases buf
+        offset += buf.length;
+      }
+      attempts = 0;
+      updateProgress(ui, offset, size);
+    } catch (e) {
+      if (ctl.paused) continue; // an aborted-by-pause fetch, not a real error
+      if (++attempts > MAX_DOWNLOAD_ATTEMPTS) return failRow(ui, pauseBtn, "failed");
+      ui.tag.textContent = "reconnecting…";
+      ui.tag.classList.remove("done", "err");
+      await sleep(600 + attempts * 400);
+    }
+  }
+
+  // Only now do we save - if we didn't assemble the whole file, we refuse to
+  // hand the user a truncated file the way the browser would.
+  if (blob.size !== size) return failRow(ui, pauseBtn, "incomplete");
+  pauseBtn.remove();
+  saveBlob(blob, name);
+  ui.bar.style.width = "100%";
+  ui.rate.textContent = "";
+  ui.tag.textContent = "✓ saved";
+  ui.tag.classList.remove("err");
+  ui.tag.classList.add("done");
+}
+
+function failRow(ui, pauseBtn, msg) {
+  ui.rate.textContent = "";
+  ui.tag.textContent = msg;
+  ui.tag.classList.remove("done");
+  ui.tag.classList.add("err");
+  if (pauseBtn) pauseBtn.remove();
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function wireDownloadPause(pauseBtn, ctl, ui) {
+  pauseBtn.onclick = () => {
+    if (ctl.paused) {
+      ctl.paused = false;
+      pauseBtn.innerHTML = PAUSE_ICON; pauseBtn.title = pauseBtn.ariaLabel = "Pause";
+      ctl.waiters.splice(0).forEach((r) => r());
+    } else {
+      ctl.paused = true;
+      pauseBtn.innerHTML = PLAY_ICON; pauseBtn.title = pauseBtn.ariaLabel = "Resume";
+      ui.rate.textContent = "";
+      if (ctl.abort) ctl.abort.abort();
+    }
+  };
 }
 
 // Ask the host how many bytes of this file (at destDir) it already has.
