@@ -38,6 +38,10 @@ jobs:
             dist/zap/zap-macos.dmg
             dist/zulu/zulu-macos.dmg
             dist/zap/zap-macos-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-zap-macos
+          path: dist/zap/zap-macos.dmg
 
   windows:
     runs-on: windows-latest
@@ -66,6 +70,10 @@ jobs:
           files: |
             dist/zap/zap-windows.zip
             dist/zulu/zulu-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-zap-windows
+          path: dist/zap/zap-windows.zip
 
   linux:
     runs-on: ubuntu-latest
@@ -101,6 +109,10 @@ jobs:
             dist/zap/zap-linux.deb
             dist/zulu/zulu-linux.deb
             dist/zap/zap-linux.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-zap-linux
+          path: dist/zap/zap-linux.deb
 
   android:
     runs-on: ubuntu-latest
@@ -122,3 +134,38 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/zulu/zulu-android.apk
+
+  # Publish the freshly-built Zap desktop installers into the site so Cloudflare
+  # (which serves site/) hands out current downloads. Runs after the builds and
+  # commits the files to main. This workflow only triggers on `v*` tags, so a
+  # push to main here never re-triggers it (no loop).
+  publish-site:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage installers into site/zap/download
+        run: |
+          d=site/zap/download
+          mkdir -p "$d"
+          cp artifacts/site-zap-macos/zap-macos.dmg "$d/zap-macos.dmg" || true
+          cp artifacts/site-zap-windows/zap-windows.zip "$d/zap-windows.zip" || true
+          cp artifacts/site-zap-linux/zap-linux.deb "$d/zap-linux.deb" || true
+          ls -la "$d"
+      - name: Commit + push to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/zap/download
+          if git diff --cached --quiet; then
+            echo "No installer changes to publish."
+            exit 0
+          fi
+          git commit -m "chore(site): publish ${GITHUB_REF_NAME} Zap installers"
+          git pull --rebase origin main
+          git push origin HEAD:main

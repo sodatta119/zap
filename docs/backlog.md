@@ -30,6 +30,25 @@ isolation" hint.
 - [x] Surface the host's reachability state - consistent green "Reachable at
       <url>" across CLI / desktop / Android, with the URL made prominent.
 
+**Round 3 - download reliability (2026-07-20):**
+
+- [x] **Download resume validators** - `ETag`/`Last-Modified` + honor `If-Range`
+      so Chrome/Safari resume instead of restarting from 0.
+- [x] **Phone-server Wi-Fi survival** - WakeLock + WifiLock + `requestNetwork(WIFI)`
+      (stops the phone disconnecting Wi-Fi / switching to mobile mid-transfer) +
+      `FLAG_KEEP_SCREEN_ON`. (Raw throughput on a marginal double-Wi-Fi link is RF,
+      not app - receiver on Ethernet / phone near router is the lever.)
+- [x] **Client-controlled verified download** - the served page fetches in Range
+      chunks, retries per-chunk, and only saves once it has the whole file, so a
+      dropped connection can't hand over a truncated file marked "done".
+- [x] Chunked-download coalescing (one row, full-size bar) + Transfers clear
+      (per-row ✕ / Clear all) + static notification icon.
+- [ ] **Large-file downloads on plain HTTP** - the growing-Blob is bounded by the
+      browser's Blob store (esp. iOS). Follow-up: optional **HTTPS (self-signed,
+      znet-core already has TLS) + a service worker** to stream unlimited-size
+      downloads to disk on desktop. iOS Safari stays platform-limited for huge
+      files regardless.
+
 ---
 
 ## Investigation - device pairing & faster transfer
