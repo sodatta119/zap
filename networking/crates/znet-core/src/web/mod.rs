@@ -1552,6 +1552,97 @@ fn crc32_table() -> &'static [u32; 256] {
     })
 }
 
+/// A streaming CRC-32 (IEEE / zlib), so bytes can be checksummed as they flow
+/// without a second read pass. `finalize()` returns the same value `crc32_file`
+/// would for the same byte sequence.
+#[derive(Clone, Copy)]
+pub(crate) struct Crc32 {
+    state: u32,
+}
+
+impl Crc32 {
+    pub(crate) fn new() -> Self {
+        Crc32 { state: 0xFFFF_FFFF }
+    }
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        let table = crc32_table();
+        let mut crc = self.state;
+        for &b in bytes {
+            crc = (crc >> 8) ^ table[((crc ^ b as u32) & 0xff) as usize];
+        }
+        self.state = crc;
+    }
+    pub(crate) fn finalize(&self) -> u32 {
+        !self.state
+    }
+}
+
+/// Combine two independently-computed CRC-32s: given `crc(A)` and `crc(B)` where
+/// `B` has length `len_b`, return `crc(A ++ B)` - without touching the bytes.
+/// Standard zlib `crc32_combine` (operate on the CRC as a vector in GF(2), and
+/// apply the "append `len_b` zero bytes to A then XOR B" operator). This lets the
+/// fast lane fold per-range CRCs into the whole-file CRC with no extra read pass.
+pub(crate) fn crc32_combine(crc_a: u32, crc_b: u32, len_b: u64) -> u32 {
+    // Matrix-times-vector and matrix-times-matrix over GF(2) (32x32 bit matrices
+    // stored as [u32; 32], one column per entry).
+    fn gf2_matrix_times(mat: &[u32; 32], mut vec: u32) -> u32 {
+        let mut sum = 0u32;
+        let mut i = 0;
+        while vec != 0 {
+            if vec & 1 != 0 {
+                sum ^= mat[i];
+            }
+            vec >>= 1;
+            i += 1;
+        }
+        sum
+    }
+    fn gf2_matrix_square(square: &mut [u32; 32], mat: &[u32; 32]) {
+        for n in 0..32 {
+            square[n] = gf2_matrix_times(mat, mat[n]);
+        }
+    }
+
+    if len_b == 0 {
+        return crc_a;
+    }
+    let mut even = [0u32; 32]; // even-power-of-two zeros operator
+    let mut odd = [0u32; 32]; // odd-power-of-two zeros operator
+
+    // Put operator for one zero bit in `odd`.
+    odd[0] = 0xEDB8_8320; // CRC-32 polynomial
+    let mut row = 1u32;
+    for n in 1..32 {
+        odd[n] = row;
+        row <<= 1;
+    }
+    gf2_matrix_square(&mut even, &odd); // operator for two zero bits
+    gf2_matrix_square(&mut odd, &even); // operator for four zero bits
+
+    let mut crc1 = crc_a;
+    let mut len = len_b;
+    // Apply len_b zero bytes to crc1, doubling the operator each step.
+    loop {
+        gf2_matrix_square(&mut even, &odd);
+        if len & 1 != 0 {
+            crc1 = gf2_matrix_times(&even, crc1);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+        gf2_matrix_square(&mut odd, &even);
+        if len & 1 != 0 {
+            crc1 = gf2_matrix_times(&odd, crc1);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+    }
+    crc1 ^ crc_b
+}
+
 /// Stream the request body to `dest`, returning the number of bytes written.
 fn write_upload(
     request: &mut Request,
@@ -2208,7 +2299,34 @@ mod tests {
         fs::write(&p, b"123456789").unwrap();
         // The canonical CRC-32/ISO-HDLC check value for "123456789".
         assert_eq!(crc32_file(&p).unwrap(), 0xCBF4_3926);
+        // The streaming Crc32 produces the same value, in one or many updates.
+        let mut c = Crc32::new();
+        c.update(b"12345");
+        c.update(b"6789");
+        assert_eq!(c.finalize(), 0xCBF4_3926);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `crc32_combine(crc(A), crc(B), len(B))` must equal `crc(A ++ B)` - the
+    /// property the fast lane relies on to verify without a second read pass.
+    #[test]
+    fn crc32_combine_matches_concatenation() {
+        let a: Vec<u8> = (0..1000u32).map(|i| i.wrapping_mul(7) as u8).collect();
+        let b: Vec<u8> = (0..1500u32).map(|i| i.wrapping_mul(13).wrapping_add(1) as u8).collect();
+        let mut whole = a.clone();
+        whole.extend_from_slice(&b);
+
+        let crc_of = |bytes: &[u8]| {
+            let mut c = Crc32::new();
+            c.update(bytes);
+            c.finalize()
+        };
+        let (ca, cb, cw) = (crc_of(&a), crc_of(&b), crc_of(&whole));
+        assert_eq!(crc32_combine(ca, cb, b.len() as u64), cw, "combine == concat crc");
+        // An empty prefix (crc of "" is 0) combines to just crc(B).
+        assert_eq!(crc32_combine(0, cb, b.len() as u64), cb, "empty prefix is identity");
+        // len_b == 0 is a no-op.
+        assert_eq!(crc32_combine(ca, crc_of(&[]), 0), ca);
     }
 
     /// Full resume round-trip: HEAD → partial PUT (drop) → HEAD sees the new

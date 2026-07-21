@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::{crc32_file, fast};
+use super::{crc32_combine, crc32_file, fast, Crc32};
 
 /// Streaming buffer size.
 const CHUNK: usize = 128 * 1024;
@@ -204,6 +204,11 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A byte range `[offset, offset+len)` of the file - one unit of parallel work.
 type Range = (u64, u64);
+/// A completed range plus the CRC-32 of its bytes: `(offset, len, crc)`. The
+/// per-range CRCs are folded (in offset order) into the whole-file CRC with
+/// [`crc32_combine`], so a fresh download verifies integrity without a second
+/// read pass over the assembled file.
+type Done = (u64, u64, u32);
 
 /// Dynamic work allocator: hands out ranges from a moving cursor at the current
 /// (adaptive) chunk size, tracks completed ranges (for the resume prefix), and
@@ -214,7 +219,7 @@ struct Alloc {
     total: u64,
     chunk_size: u64,
     reclaim: Vec<Range>,
-    completed: Vec<Range>,
+    completed: Vec<Done>,
     attempts: HashMap<u64, u32>,
 }
 
@@ -235,8 +240,8 @@ impl Alloc {
         None
     }
 
-    fn complete(&mut self, r: Range) {
-        self.completed.push(r);
+    fn complete(&mut self, r: Range, crc: u32) {
+        self.completed.push((r.0, r.1, crc));
     }
 
     /// Record a failed range. Returns true if it has failed too many times (the
@@ -265,10 +270,10 @@ impl Alloc {
     /// The length of the contiguous, gap-free prefix of completed ranges from
     /// `start` - the point the temp file is valid up to for resume/fallback.
     fn contiguous_prefix(&self) -> u64 {
-        let mut ends: Vec<Range> = self.completed.clone();
-        ends.sort_by_key(|(off, _)| *off);
+        let mut ends: Vec<Done> = self.completed.clone();
+        ends.sort_by_key(|(off, _, _)| *off);
         let mut prefix = self.start;
-        for (off, len) in ends {
+        for (off, len, _) in ends {
             if off <= prefix {
                 prefix = prefix.max(off + len);
             } else {
@@ -401,7 +406,20 @@ fn fast_download(
     if got != total {
         bail!("fast lane size mismatch: {got}/{total}");
     }
-    let verified = verify_crc(part, crc)?;
+    // Verify integrity by folding the per-range CRCs into the whole-file CRC (no
+    // second read pass over the freshly-downloaded bytes); only the resumed
+    // prefix [0, start) is read. Fall back to a full re-read if that can't be
+    // reconstructed for any reason.
+    let verified = if let Some(want) = crc {
+        let mut completed = lock(&shared.alloc).completed.clone();
+        let got_crc = match combined_crc(part, start, &mut completed) {
+            Ok(v) => v,
+            Err(_) => crc32_file(part).map_err(|e| anyhow!("reading for CRC: {e}"))?,
+        };
+        got_crc == want
+    } else {
+        false
+    };
     if crc.is_some() && !verified {
         let _ = fs::remove_file(part);
         bail!("integrity check failed (CRC mismatch)");
@@ -523,10 +541,10 @@ fn worker(shared: Arc<Shared>, t: Target, fast_port: u16) {
             }
         };
         match download_range(&shared, &t, fast_port, &file, range) {
-            Ok(written) => {
+            Ok((written, crc)) => {
                 shared.bytes.fetch_add(written, Ordering::SeqCst);
                 shared.progress.done.fetch_add(written, Ordering::Relaxed);
-                lock(&shared.alloc).complete(range);
+                lock(&shared.alloc).complete(range, crc);
             }
             Err(_) => {
                 shared.errors.fetch_add(1, Ordering::SeqCst);
@@ -589,9 +607,10 @@ fn record_rtt(shared: &Shared, dt: Duration) {
 }
 
 /// Download one range over its own connection (timing the connect as an RTT
-/// proxy) and write the bytes at their absolute offset in `file`. Returns bytes
-/// written, or an error on a short read so the caller can requeue the range.
-fn download_range(shared: &Shared, t: &Target, fast_port: u16, file: &std::fs::File, r: Range) -> Result<u64> {
+/// proxy), write the bytes at their absolute offset in `file`, and CRC them as
+/// they stream. Returns `(bytes_written, range_crc)`, or an error on a short read
+/// so the caller can requeue the range.
+fn download_range(shared: &Shared, t: &Target, fast_port: u16, file: &std::fs::File, r: Range) -> Result<(u64, u32)> {
     let (offset, len) = r;
 
     let connect_start = Instant::now();
@@ -604,6 +623,7 @@ fn download_range(shared: &Shared, t: &Target, fast_port: u16, file: &std::fs::F
     let mut pos = offset;
     let mut remaining = len;
     let mut buf = [0u8; CHUNK];
+    let mut crc = Crc32::new();
     while remaining > 0 {
         let want = remaining.min(buf.len() as u64) as usize;
         let n = stream.read(&mut buf[..want])?;
@@ -611,10 +631,11 @@ fn download_range(shared: &Shared, t: &Target, fast_port: u16, file: &std::fs::F
             bail!("connection closed with {remaining} bytes left in range");
         }
         write_at(file, pos, &buf[..n])?;
+        crc.update(&buf[..n]);
         pos += n as u64;
         remaining -= n as u64;
     }
-    Ok(len)
+    Ok((len, crc.finalize()))
 }
 
 /// Verify the temp file's whole-file CRC-32 against `expected`. `Ok(true)` when
@@ -628,6 +649,42 @@ fn verify_crc(part: &Path, expected: Option<u32>) -> Result<bool> {
         }
         None => Ok(false),
     }
+}
+
+/// Compute the whole-file CRC-32 by folding the per-range CRCs (in offset order)
+/// with [`crc32_combine`], reading only the resumed prefix `[0, start)` from
+/// disk. Errors if the completed ranges don't cover `[start, total)` contiguously
+/// (the caller then falls back to a full re-read).
+fn combined_crc(part: &Path, start: u64, ranges: &mut [Done]) -> Result<u32> {
+    let mut acc = if start == 0 { 0u32 } else { crc32_prefix(part, start)? };
+    ranges.sort_by_key(|(off, _, _)| *off);
+    let mut pos = start;
+    for &(off, len, crc) in ranges.iter() {
+        if off != pos {
+            bail!("non-contiguous ranges for CRC combine at {off} (expected {pos})");
+        }
+        acc = crc32_combine(acc, crc, len);
+        pos += len;
+    }
+    Ok(acc)
+}
+
+/// The CRC-32 of the first `len` bytes of `part` (the resumed prefix).
+fn crc32_prefix(part: &Path, len: u64) -> Result<u32> {
+    let mut f = File::open(part)?;
+    let mut crc = Crc32::new();
+    let mut remaining = len;
+    let mut buf = [0u8; 65536];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = f.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        crc.update(&buf[..n]);
+        remaining -= n as u64;
+    }
+    Ok(crc.finalize())
 }
 
 /// Stat the file over the fast lane: a handshake with a zero-length range
@@ -1500,13 +1557,13 @@ mod tests {
     fn alloc_contiguous_prefix_stops_at_first_gap() {
         let mut a = new_alloc(0, 1000, 250);
         // Complete [0,250), [250,500), [750,1000) - gap at [500,750).
-        a.complete((0, 250));
-        a.complete((250, 250));
-        a.complete((750, 250));
+        a.complete((0, 250), 0);
+        a.complete((250, 250), 0);
+        a.complete((750, 250), 0);
         assert_eq!(a.contiguous_prefix(), 500);
         assert!(!a.all_done());
         // Fill the gap -> whole file is contiguous.
-        a.complete((500, 250));
+        a.complete((500, 250), 0);
         // cursor hasn't reached total in this hand-built alloc, so all_done needs
         // the cursor advanced too; contiguous_prefix alone is the resume point.
         assert_eq!(a.contiguous_prefix(), 1000);
