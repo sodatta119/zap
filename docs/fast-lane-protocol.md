@@ -156,9 +156,34 @@ leave a full-size file with holes; the whole-file CRC check catches this and the
 download restarts clean (never surfaced as complete). A future per-file chunk
 manifest (sidecar) would make even a hard-kill resumable - noted, not built.
 
-**Adaptation (next phase, P3):** the connection count and chunk size are fixed
-defaults today (overridable via the CLI `--streams` / `--chunk-mb`). P3 will drive
-them from measured per-connection throughput and RTT, logging the chosen values.
+**Adaptation (implemented).** By default the client adapts live:
+
+- It stats the file, then starts an elastic worker pool at `MIN_STREAMS` (4, the
+  brief's "start ~4") and hands out ranges from a moving cursor at the current
+  chunk size.
+- A controller samples aggregate throughput every 100 ms. While throughput keeps
+  improving and no ranges are failing it grows concurrency multiplicatively
+  (slow-start, doubling toward the `--streams` cap, default 8); on a throughput
+  drop it sheds one stream, and on any range failures it eases off one stream
+  (AIMD). Chunk size for new ranges is sized from measured per-connection
+  throughput and RTT (connect time), clamped to [1, 8] MiB - big enough to keep a
+  few RTTs in flight, small enough that a dropped stream re-fetches little.
+- Each decision is logged (`zap: fast-lane adapt - streams A->B, chunk N KiB, ~X
+  MB/s, rtt Y ms, errs Z`) so the behavior is observable.
+- `--fixed` turns adaptation off and uses exactly `--streams` connections at a
+  constant `--chunk-mb`, for A/B experiments.
+
+The adaptation lever is genuine: on a lossy-but-connected link, more streams fill
+the pipe a single congestion-controlled stream cannot, and modest chunks bound the
+cost of a dropped range. On a clean, low-latency link (e.g. loopback) the transfer
+is already near line rate at a few streams, so the ramp simply settles quickly.
+
+**Integrity cost note.** A download is verified with a whole-file CRC-32: the
+server computes it once (cached), the client re-computes it over the assembled
+file before the rename. For very large files this adds a read pass on each side;
+a future optimization could fold per-range CRCs together (`crc32_combine`) to
+verify without the extra pass. Correctness first: a partial or corrupt file is
+never surfaced as complete.
 
 **True loss-tolerance (out of scope):** independent streams with no head-of-line
 blocking and real FEC is QUIC/UDP territory (`quinn`/`iroh`), a separate track.

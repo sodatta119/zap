@@ -65,7 +65,8 @@ fn run() -> Result<()> {
             dest,
             streams,
             chunk_mb,
-        } => cmd_get(&url, &dest, streams, chunk_mb),
+            fixed,
+        } => cmd_get(&url, &dest, streams, chunk_mb, fixed),
 
         Command::Devices => {
             let transport = build_transport(cli.transport)?;
@@ -91,10 +92,11 @@ fn run() -> Result<()> {
 
 /// Download a file from a Zap share link, using the fast lane when the peer
 /// advertises one and falling back to HTTP otherwise.
-fn cmd_get(url: &str, dest: &str, streams: usize, chunk_mb: u64) -> Result<()> {
+fn cmd_get(url: &str, dest: &str, streams: usize, chunk_mb: u64, fixed: bool) -> Result<()> {
     let opts = web::fast_client::GetOptions {
         streams: streams.max(1),
         chunk_size: chunk_mb.max(1) << 20,
+        adaptive: !fixed,
     };
     let started = std::time::Instant::now();
     let report = web::fast_client::get_with(url, std::path::Path::new(dest), opts)?;

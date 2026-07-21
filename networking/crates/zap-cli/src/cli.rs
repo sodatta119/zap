@@ -63,12 +63,18 @@ pub enum Command {
         /// Destination file or directory (defaults to the current directory).
         #[arg(default_value = ".")]
         dest: String,
-        /// Number of parallel fast-lane connections (streams).
-        #[arg(long, default_value_t = 4)]
+        /// Max parallel fast-lane connections. Adaptive mode ramps up to this;
+        /// with --fixed it is the exact count.
+        #[arg(long, default_value_t = 8)]
         streams: usize,
-        /// Byte range each stream requests at a time, in MiB.
+        /// Fast-lane chunk size in MiB. Adaptive mode starts here and tunes it;
+        /// with --fixed it stays constant.
         #[arg(long = "chunk-mb", default_value_t = 4)]
         chunk_mb: u64,
+        /// Disable adaptation: use exactly --streams connections and a constant
+        /// --chunk-mb (useful for A/B throughput experiments).
+        #[arg(long)]
+        fixed: bool,
     },
 
     /// Start a web server so a phone can transfer files over Wi-Fi (no app).

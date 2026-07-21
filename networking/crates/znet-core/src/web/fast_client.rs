@@ -12,14 +12,15 @@
 //! the fast lane only when it is on plain HTTP (see `web::capabilities_json`), so
 //! this stays consistent.
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -66,21 +67,24 @@ struct Target {
 
 /// Tunables for the fast lane. `streams` is the number of parallel TCP
 /// connections; `chunk_size` is the byte range each connection requests at a
-/// time. P3 will adapt these live from measured throughput/RTT; for now they are
-/// fixed defaults (overridable from the CLI for experiments).
+/// time. When `adaptive` is set (the default), the download ramps concurrency up
+/// to `streams` (used as a cap) and sizes chunks live from measured
+/// throughput/RTT, starting from `chunk_size`; when it is clear, `streams` and
+/// `chunk_size` are used as-is (fixed), which is handy for A/B experiments.
 #[derive(Debug, Clone, Copy)]
 pub struct GetOptions {
     pub streams: usize,
     pub chunk_size: u64,
+    pub adaptive: bool,
 }
 
-/// ~4 parallel connections is a sensible starting point (per the design brief);
-/// modest chunks keep a dropped stream cheap to re-fetch.
+/// Adaptive by default: ramp up to 8 connections, start at 4 MiB chunks.
 impl Default for GetOptions {
     fn default() -> Self {
         GetOptions {
-            streams: 4,
+            streams: 8,
             chunk_size: 4 << 20, // 4 MiB
+            adaptive: true,
         }
     }
 }
@@ -150,32 +154,129 @@ fn finalize(part: &Path, final_path: &Path) -> Result<()> {
         .with_context(|| format!("finalizing {}", final_path.display()))
 }
 
-// ---- Fast lane (multi-stream) ----
+// ---- Fast lane (multi-stream, adaptive) ----
 
-/// Max times a single chunk may fail (across the whole pool) before the fast
+/// Max times a single range may fail (across the whole pool) before the fast
 /// lane gives up and the caller falls back to HTTP.
-const MAX_CHUNK_ATTEMPTS: u32 = 4;
+const MAX_RANGE_ATTEMPTS: u32 = 4;
+/// Concurrency floor / starting point when adapting (the brief's "start ~4").
+const MIN_STREAMS: usize = 4;
+/// Chunk-size bounds - modest so a dropped stream re-fetches little (brief 3.5).
+const MIN_CHUNK: u64 = 1 << 20; // 1 MiB
+const MAX_CHUNK: u64 = 8 << 20; // 8 MiB
+/// How often the controller samples throughput and re-tunes.
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// One unit of parallel work: a byte range `[offset, offset+len)` of the file.
-#[derive(Clone, Copy)]
-struct Chunk {
-    offset: u64,
-    len: u64,
+/// A byte range `[offset, offset+len)` of the file - one unit of parallel work.
+type Range = (u64, u64);
+
+/// Dynamic work allocator: hands out ranges from a moving cursor at the current
+/// (adaptive) chunk size, tracks completed ranges (for the resume prefix), and
+/// holds failed ranges for retry. Guarded by one mutex in [`Shared`].
+struct Alloc {
+    start: u64,
+    cursor: u64,
+    total: u64,
+    chunk_size: u64,
+    reclaim: Vec<Range>,
+    completed: Vec<Range>,
+    attempts: HashMap<u64, u32>,
 }
 
-/// Drive a multi-stream fast-lane download.
+impl Alloc {
+    /// Claim the next range: a failed range to retry if any, else a fresh
+    /// `chunk_size` slice from the cursor. `None` when nothing is left to hand
+    /// out (work may still be in flight in other workers).
+    fn claim(&mut self) -> Option<Range> {
+        if let Some(r) = self.reclaim.pop() {
+            return Some(r);
+        }
+        if self.cursor < self.total {
+            let len = self.chunk_size.min(self.total - self.cursor);
+            let r = (self.cursor, len);
+            self.cursor += len;
+            return Some(r);
+        }
+        None
+    }
+
+    fn complete(&mut self, r: Range) {
+        self.completed.push(r);
+    }
+
+    /// Record a failed range. Returns true if it has failed too many times (the
+    /// caller should abort the fast lane); otherwise it is queued for retry.
+    fn fail(&mut self, r: Range) -> bool {
+        let n = self.attempts.entry(r.0).or_insert(0);
+        *n += 1;
+        if *n >= MAX_RANGE_ATTEMPTS {
+            true
+        } else {
+            self.reclaim.push(r);
+            false
+        }
+    }
+
+    /// True once every byte has been handed out and completed.
+    fn all_done(&self) -> bool {
+        self.reclaim.is_empty() && self.cursor >= self.total && self.contiguous_prefix() >= self.total
+    }
+
+    /// True while there is still work to hand out (fresh or reclaimed).
+    fn work_remaining(&self) -> bool {
+        !self.reclaim.is_empty() || self.cursor < self.total
+    }
+
+    /// The length of the contiguous, gap-free prefix of completed ranges from
+    /// `start` - the point the temp file is valid up to for resume/fallback.
+    fn contiguous_prefix(&self) -> u64 {
+        let mut ends: Vec<Range> = self.completed.clone();
+        ends.sort_by_key(|(off, _)| *off);
+        let mut prefix = self.start;
+        for (off, len) in ends {
+            if off <= prefix {
+                prefix = prefix.max(off + len);
+            } else {
+                break;
+            }
+        }
+        prefix
+    }
+}
+
+/// State shared between the controller and the worker pool.
+struct Shared {
+    alloc: Mutex<Alloc>,
+    part: PathBuf,
+    /// Bytes successfully written (drives throughput measurement).
+    bytes: AtomicU64,
+    /// Cumulative failed ranges (drives the back-off signal).
+    errors: AtomicU64,
+    /// Workers currently running.
+    active: AtomicUsize,
+    /// Target worker count the controller is steering toward.
+    desired: AtomicUsize,
+    /// Peak concurrency actually reached (reported back).
+    peak: AtomicUsize,
+    /// EWMA of TCP connect time in nanoseconds (an RTT proxy); 0 = unknown.
+    rtt_ns: AtomicU64,
+    /// Set to unwind everything on a fatal error, or once complete.
+    abort: AtomicBool,
+    done: AtomicBool,
+}
+
+/// Drive an (optionally adaptive) multi-stream fast-lane download.
 ///
-/// It stats the file once (learning `total` + whole-file CRC and warming the
-/// server's CRC cache), pre-sizes the temp file, then splits the remaining bytes
-/// into fixed-size chunks that `streams` worker threads pull from a shared queue,
-/// each writing its range at the correct offset (positioned writes, no locking on
-/// the hot path). On success it verifies the whole-file size + CRC and returns.
-///
-/// Resilience: a chunk that fails is requeued and retried by any worker; if the
-/// pool exhausts its retry budget the file is truncated to its **contiguous
-/// prefix** (so the on-disk temp file is always a valid resume point) and an
-/// error is returned, letting the caller finish over HTTP. Returns
-/// `(total, verified, resumed_from, streams_used)`.
+/// Stats the file once (learning `total` + whole-file CRC and warming the
+/// server's CRC cache), pre-sizes the temp file, then runs an elastic pool of
+/// worker connections that pull ranges from a shared allocator and write them at
+/// their absolute offset (positioned writes, no hot-path locking). When adaptive,
+/// a controller samples aggregate throughput every [`SAMPLE_INTERVAL`], hill-
+/// climbs the connection count up to `opts.streams`, and sizes new ranges from
+/// measured throughput/RTT - logging each decision. On success it verifies the
+/// whole-file size + CRC; on unrecoverable failure it truncates the temp file to
+/// its contiguous prefix (a valid resume point) and errors so the caller finishes
+/// over HTTP. Returns `(total, verified, resumed_from, peak_streams)`.
 fn fast_download(
     t: &Target,
     fast_port: u16,
@@ -188,11 +289,11 @@ fn fast_download(
     // any failure), so its length is a valid resume offset.
     let mut start = fs::metadata(part).map(|m| m.len()).unwrap_or(0);
     if start > total {
-        start = 0; // stale/oversized partial: start clean
+        start = 0;
     }
 
-    // Pre-size to the full length so workers can write their ranges at absolute
-    // offsets; the existing [0, start) prefix is preserved, the rest zero-filled.
+    // Pre-size to the full length so workers can write ranges at absolute offsets;
+    // the existing [0, start) prefix is preserved, the rest zero-filled.
     {
         let file = OpenOptions::new()
             .create(true)
@@ -203,8 +304,6 @@ fn fast_download(
     }
 
     if start == total {
-        // Everything is already here (e.g. resuming a finished-but-unrenamed
-        // download): just verify.
         let verified = verify_crc(part, crc)?;
         if crc.is_some() && !verified {
             let _ = fs::remove_file(part);
@@ -213,75 +312,44 @@ fn fast_download(
         return Ok((total, verified, start, 0));
     }
 
-    let chunk_size = opts.chunk_size.max(64 * 1024);
-    let chunks = plan_chunks(start, total, chunk_size);
-    let streams = opts.streams.max(1).min(chunks.len());
+    let max_streams = opts.streams.max(1);
+    let min_streams = if opts.adaptive {
+        MIN_STREAMS.min(max_streams)
+    } else {
+        max_streams
+    };
+    let init_chunk = if opts.adaptive {
+        opts.chunk_size.clamp(MIN_CHUNK, MAX_CHUNK)
+    } else {
+        opts.chunk_size.max(64 * 1024)
+    };
 
-    let done: Arc<Vec<AtomicBool>> = Arc::new((0..chunks.len()).map(|_| AtomicBool::new(false)).collect());
-    // Pending chunk indices (as a stack); failed chunks are pushed back on.
-    let pending = Arc::new(Mutex::new((0..chunks.len()).rev().collect::<Vec<usize>>()));
-    let attempts = Arc::new(Mutex::new(vec![0u32; chunks.len()]));
-    let abort = Arc::new(AtomicBool::new(false));
-    let chunks = Arc::new(chunks);
+    let shared = Arc::new(Shared {
+        alloc: Mutex::new(Alloc {
+            start,
+            cursor: start,
+            total,
+            chunk_size: init_chunk,
+            reclaim: Vec::new(),
+            completed: Vec::new(),
+            attempts: HashMap::new(),
+        }),
+        part: part.to_path_buf(),
+        bytes: AtomicU64::new(0),
+        errors: AtomicU64::new(0),
+        active: AtomicUsize::new(0),
+        desired: AtomicUsize::new(min_streams),
+        peak: AtomicUsize::new(0),
+        rtt_ns: AtomicU64::new(0),
+        abort: AtomicBool::new(false),
+        done: AtomicBool::new(false),
+    });
 
-    let mut handles = Vec::with_capacity(streams);
-    for _ in 0..streams {
-        let t = t.clone();
-        let part = part.to_path_buf();
-        let done = Arc::clone(&done);
-        let pending = Arc::clone(&pending);
-        let attempts = Arc::clone(&attempts);
-        let abort = Arc::clone(&abort);
-        let chunks = Arc::clone(&chunks);
-        handles.push(thread::spawn(move || {
-            // One write handle per worker, reused for all its chunks.
-            let file = match OpenOptions::new().write(true).open(&part) {
-                Ok(f) => f,
-                Err(_) => {
-                    abort.store(true, Ordering::SeqCst);
-                    return;
-                }
-            };
-            loop {
-                if abort.load(Ordering::SeqCst) {
-                    return;
-                }
-                let idx = match pending.lock().unwrap_or_else(|e| e.into_inner()).pop() {
-                    Some(i) => i,
-                    None => return, // queue drained
-                };
-                let c = chunks[idx];
-                match download_chunk(&t, fast_port, &file, c) {
-                    Ok(()) => {
-                        done[idx].store(true, Ordering::SeqCst);
-                    }
-                    Err(_) => {
-                        let over = {
-                            let mut a = attempts.lock().unwrap_or_else(|e| e.into_inner());
-                            a[idx] += 1;
-                            a[idx] >= MAX_CHUNK_ATTEMPTS
-                        };
-                        if over {
-                            abort.store(true, Ordering::SeqCst);
-                            return;
-                        }
-                        // Requeue and let any worker retry after a brief backoff.
-                        pending.lock().unwrap_or_else(|e| e.into_inner()).push(idx);
-                        thread::sleep(Duration::from_millis(150));
-                    }
-                }
-            }
-        }));
-    }
-    for h in handles {
-        let _ = h.join();
-    }
+    run_pool(&shared, t, fast_port, opts, min_streams, max_streams);
 
-    let all_done = done.iter().all(|d| d.load(Ordering::SeqCst));
+    let all_done = lock(&shared.alloc).all_done();
     if !all_done {
-        // Leave the temp file as a valid contiguous prefix so HTTP fallback (and
-        // the next run) resumes cleanly instead of seeing a holey full-size file.
-        let prefix = contiguous_prefix(start, &chunks, &done);
+        let prefix = lock(&shared.alloc).contiguous_prefix();
         if let Ok(file) = OpenOptions::new().write(true).open(part) {
             let _ = file.set_len(prefix);
         }
@@ -294,37 +362,217 @@ fn fast_download(
     }
     let verified = verify_crc(part, crc)?;
     if crc.is_some() && !verified {
-        // Corrupt assembly: discard so the next attempt starts clean.
         let _ = fs::remove_file(part);
         bail!("integrity check failed (CRC mismatch)");
     }
-    Ok((total, verified, start, streams))
+    let peak = shared.peak.load(Ordering::SeqCst).max(1);
+    Ok((total, verified, start, peak))
 }
 
-/// Split `[start, total)` into `chunk_size` pieces (the last may be shorter).
-fn plan_chunks(start: u64, total: u64, chunk_size: u64) -> Vec<Chunk> {
-    let mut chunks = Vec::new();
-    let mut off = start;
-    while off < total {
-        let len = chunk_size.min(total - off);
-        chunks.push(Chunk { offset: off, len });
-        off += len;
-    }
-    chunks
+/// Lock a mutex, tolerating poisoning (a panicked worker must not wedge us).
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The length of the contiguous run of completed chunks from `start` - the point
-/// up to which the temp file is a valid, gap-free prefix.
-fn contiguous_prefix(start: u64, chunks: &[Chunk], done: &[AtomicBool]) -> u64 {
-    let mut prefix = start;
-    for (i, c) in chunks.iter().enumerate() {
-        if done[i].load(Ordering::SeqCst) {
-            prefix = c.offset + c.len;
-        } else {
+/// Run the controller loop: keep `desired` workers alive, and (when adaptive)
+/// re-tune `desired` + chunk size from measured throughput/RTT every interval.
+fn run_pool(
+    shared: &Arc<Shared>,
+    t: &Target,
+    fast_port: u16,
+    opts: GetOptions,
+    min_streams: usize,
+    max_streams: usize,
+) {
+    let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
+    let mut prev_bytes = 0u64;
+    let mut prev_tput = 0.0f64;
+    let mut prev_errors = 0u64;
+
+    loop {
+        if shared.abort.load(Ordering::SeqCst) {
             break;
         }
+        if lock(&shared.alloc).all_done() {
+            break;
+        }
+
+        // Bring the pool up to `desired` while there is work to hand out.
+        let desired = shared.desired.load(Ordering::SeqCst);
+        let active = shared.active.load(Ordering::SeqCst);
+        if lock(&shared.alloc).work_remaining() {
+            for _ in active..desired {
+                shared.active.fetch_add(1, Ordering::SeqCst);
+                let peak_now = shared.active.load(Ordering::SeqCst);
+                shared.peak.fetch_max(peak_now, Ordering::SeqCst);
+                let shared = Arc::clone(shared);
+                let t = t.clone();
+                handles.push(thread::spawn(move || worker(shared, t, fast_port)));
+            }
+        }
+
+        thread::sleep(SAMPLE_INTERVAL);
+
+        // Measure the interval just elapsed.
+        let now_bytes = shared.bytes.load(Ordering::SeqCst);
+        let delta = now_bytes.saturating_sub(prev_bytes);
+        prev_bytes = now_bytes;
+        let tput = delta as f64 / SAMPLE_INTERVAL.as_secs_f64(); // bytes/s
+        let now_errors = shared.errors.load(Ordering::SeqCst);
+        let err_delta = now_errors.saturating_sub(prev_errors);
+        prev_errors = now_errors;
+
+        if opts.adaptive {
+            let cur = shared.desired.load(Ordering::SeqCst);
+            let next = decide_concurrency(prev_tput, tput, cur, min_streams, max_streams, err_delta);
+            shared.desired.store(next, Ordering::SeqCst);
+
+            let rtt_s = shared.rtt_ns.load(Ordering::SeqCst) as f64 / 1e9;
+            let per_conn = if cur > 0 { tput / cur as f64 } else { tput };
+            let cs = adaptive_chunk_size(per_conn, rtt_s, MIN_CHUNK, MAX_CHUNK);
+            lock(&shared.alloc).chunk_size = cs;
+
+            eprintln!(
+                "zap: fast-lane adapt - streams {cur}->{next}, chunk {} KiB, ~{:.1} MB/s, rtt {:.1} ms, errs {err_delta}",
+                cs / 1024,
+                tput / 1_000_000.0,
+                rtt_s * 1000.0,
+            );
+            prev_tput = tput;
+        }
     }
-    prefix
+
+    // Let idle/blocked workers exit and reap them.
+    shared.done.store(true, Ordering::SeqCst);
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
+/// One worker: pull ranges and download them until retired, aborted, or done.
+fn worker(shared: Arc<Shared>, t: Target, fast_port: u16) {
+    // One write handle per worker; positioned writes need no cursor coordination.
+    let file = match OpenOptions::new().write(true).open(&shared.part) {
+        Ok(f) => f,
+        Err(_) => {
+            shared.abort.store(true, Ordering::SeqCst);
+            shared.active.fetch_sub(1, Ordering::SeqCst);
+            return;
+        }
+    };
+    loop {
+        if shared.abort.load(Ordering::SeqCst) || shared.done.load(Ordering::SeqCst) {
+            break;
+        }
+        // Retire if the controller has scaled concurrency down.
+        if shared.active.load(Ordering::SeqCst) > shared.desired.load(Ordering::SeqCst) {
+            break;
+        }
+        let claimed = lock(&shared.alloc).claim();
+        let range = match claimed {
+            Some(r) => r,
+            None => {
+                // Nothing to hand out now: stop if finished, else a reclaim may
+                // still appear from another worker - wait briefly and recheck.
+                if lock(&shared.alloc).all_done() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+        };
+        match download_range(&shared, &t, fast_port, &file, range) {
+            Ok(written) => {
+                shared.bytes.fetch_add(written, Ordering::SeqCst);
+                lock(&shared.alloc).complete(range);
+            }
+            Err(_) => {
+                shared.errors.fetch_add(1, Ordering::SeqCst);
+                let over = lock(&shared.alloc).fail(range);
+                if over {
+                    shared.abort.store(true, Ordering::SeqCst);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+    shared.active.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Steer the connection count from a throughput sample. While throughput keeps
+/// improving and no ranges are failing, ramp up multiplicatively (slow-start:
+/// double toward `max`) so a good link reaches useful concurrency in a couple of
+/// samples; back off by one on errors or a throughput drop (AIMD-style), and hold
+/// on a plateau. Clamped to `[min, max]`.
+fn decide_concurrency(
+    prev_tput: f64,
+    cur_tput: f64,
+    desired: usize,
+    min: usize,
+    max: usize,
+    err_delta: u64,
+) -> usize {
+    if err_delta > 0 && desired > min {
+        return (desired - 1).max(min); // link is dropping ranges: ease off
+    }
+    if cur_tput > prev_tput * 1.10 && desired < max {
+        return (desired * 2).min(max); // still helping: grow fast
+    }
+    if cur_tput < prev_tput * 0.90 && desired > min {
+        return desired - 1; // throughput fell: shed a stream
+    }
+    desired
+}
+
+/// Size the next range from measured per-connection throughput and RTT: big
+/// enough to keep several RTTs in flight (fill the pipe), but capped so a dropped
+/// stream re-fetches only ~0.5s of data. Clamped to `[min, max]`.
+fn adaptive_chunk_size(per_conn_bps: f64, rtt_s: f64, min: u64, max: u64) -> u64 {
+    if per_conn_bps <= 0.0 {
+        return (4 << 20u64).clamp(min, max);
+    }
+    let by_time = per_conn_bps * 0.5; // ~0.5s of data
+    let by_bdp = per_conn_bps * rtt_s * 4.0; // keep ~4 RTTs in flight
+    let cs = by_time.max(by_bdp) as u64;
+    cs.clamp(min, max)
+}
+
+/// Fold a fresh connect duration into the shared RTT estimate (EWMA, 1/8 weight).
+fn record_rtt(shared: &Shared, dt: Duration) {
+    let ns = dt.as_nanos().min(u64::MAX as u128) as u64;
+    let old = shared.rtt_ns.load(Ordering::SeqCst);
+    let new = if old == 0 { ns } else { (old * 7 + ns) / 8 };
+    shared.rtt_ns.store(new, Ordering::SeqCst);
+}
+
+/// Download one range over its own connection (timing the connect as an RTT
+/// proxy) and write the bytes at their absolute offset in `file`. Returns bytes
+/// written, or an error on a short read so the caller can requeue the range.
+fn download_range(shared: &Shared, t: &Target, fast_port: u16, file: &std::fs::File, r: Range) -> Result<u64> {
+    let (offset, len) = r;
+
+    let connect_start = Instant::now();
+    let mut stream = connect_fast(t, fast_port)?;
+    record_rtt(shared, connect_start.elapsed());
+
+    write_handshake(&mut stream, t, offset, len)?;
+    let _ = read_reply(&mut stream)?; // total/CRC already known from the stat
+
+    let mut pos = offset;
+    let mut remaining = len;
+    let mut buf = [0u8; CHUNK];
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = stream.read(&mut buf[..want])?;
+        if n == 0 {
+            bail!("connection closed with {remaining} bytes left in range");
+        }
+        write_at(file, pos, &buf[..n])?;
+        pos += n as u64;
+        remaining -= n as u64;
+    }
+    Ok(len)
 }
 
 /// Verify the temp file's whole-file CRC-32 against `expected`. `Ok(true)` when
@@ -348,30 +596,6 @@ fn fast_stat(t: &Target, fast_port: u16) -> Result<(u64, Option<u32>)> {
     write_handshake(&mut stream, t, u64::MAX, 0)?;
     let (total, crc) = read_reply(&mut stream)?;
     Ok((total, crc))
-}
-
-/// Download one chunk over its own connection, writing the bytes at their
-/// absolute offset in `file`. Errors on a short read (dropped connection) so the
-/// caller can requeue the chunk.
-fn download_chunk(t: &Target, fast_port: u16, file: &std::fs::File, c: Chunk) -> Result<()> {
-    let mut stream = connect_fast(t, fast_port)?;
-    write_handshake(&mut stream, t, c.offset, c.len)?;
-    let _ = read_reply(&mut stream)?; // total/CRC already known from the stat
-
-    let mut pos = c.offset;
-    let mut remaining = c.len;
-    let mut buf = [0u8; CHUNK];
-    while remaining > 0 {
-        let want = remaining.min(buf.len() as u64) as usize;
-        let n = stream.read(&mut buf[..want])?;
-        if n == 0 {
-            bail!("connection closed with {remaining} bytes left in chunk");
-        }
-        write_at(file, pos, &buf[..n])?;
-        pos += n as u64;
-        remaining -= n as u64;
-    }
-    Ok(())
 }
 
 /// Open a fast-lane connection with sensible socket options.
@@ -808,38 +1032,105 @@ mod tests {
         let _ = fs::remove_dir_all(&dst);
     }
 
-    #[test]
-    fn plan_chunks_covers_the_whole_range() {
-        let chunks = plan_chunks(100, 1000, 300);
-        // [100,400) [400,700) [700,1000)
-        assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].offset, 100);
-        assert_eq!(chunks[0].len, 300);
-        assert_eq!(chunks[2].offset, 700);
-        assert_eq!(chunks[2].len, 300);
-        // No gaps or overlaps, and the union is exactly [100,1000).
-        let covered: u64 = chunks.iter().map(|c| c.len).sum();
-        assert_eq!(covered, 900);
-
-        // A ragged tail chunk is shorter, not dropped.
-        let ragged = plan_chunks(0, 1000, 400);
-        assert_eq!(ragged.len(), 3);
-        assert_eq!(ragged[2].offset, 800);
-        assert_eq!(ragged[2].len, 200);
+    fn new_alloc(start: u64, total: u64, chunk_size: u64) -> Alloc {
+        Alloc {
+            start,
+            cursor: start,
+            total,
+            chunk_size,
+            reclaim: Vec::new(),
+            completed: Vec::new(),
+            attempts: HashMap::new(),
+        }
     }
 
     #[test]
-    fn contiguous_prefix_stops_at_first_gap() {
-        let chunks = plan_chunks(0, 1000, 250); // 4 chunks of 250
-        let done: Vec<AtomicBool> = (0..chunks.len()).map(|_| AtomicBool::new(false)).collect();
-        // chunk 0 and 1 done, chunk 2 missing, chunk 3 done -> prefix stops at 500.
-        done[0].store(true, Ordering::SeqCst);
-        done[1].store(true, Ordering::SeqCst);
-        done[3].store(true, Ordering::SeqCst);
-        assert_eq!(contiguous_prefix(0, &chunks, &done), 500);
-        // Fill the gap -> the whole file is a contiguous prefix.
-        done[2].store(true, Ordering::SeqCst);
-        assert_eq!(contiguous_prefix(0, &chunks, &done), 1000);
+    fn alloc_hands_out_chunks_and_a_ragged_tail() {
+        let mut a = new_alloc(100, 1000, 300);
+        assert_eq!(a.claim(), Some((100, 300)));
+        assert_eq!(a.claim(), Some((400, 300)));
+        assert_eq!(a.claim(), Some((700, 300)));
+        // Only 900 bytes remained, so the last claim is the ragged tail... which
+        // here is exactly consumed; nothing left.
+        assert_eq!(a.claim(), None);
+
+        // Ragged tail shorter than a full chunk.
+        let mut b = new_alloc(0, 1000, 400);
+        assert_eq!(b.claim(), Some((0, 400)));
+        assert_eq!(b.claim(), Some((400, 400)));
+        assert_eq!(b.claim(), Some((800, 200)));
+        assert_eq!(b.claim(), None);
+    }
+
+    #[test]
+    fn alloc_reclaims_failed_ranges_before_new_ones() {
+        let mut a = new_alloc(0, 1000, 250);
+        let r0 = a.claim().unwrap(); // (0,250)
+        let _r1 = a.claim().unwrap(); // (250,250)
+        assert!(!a.fail(r0), "first failure just requeues");
+        // The reclaimed range is handed out ahead of fresh cursor work.
+        assert_eq!(a.claim(), Some((0, 250)));
+    }
+
+    #[test]
+    fn alloc_fail_aborts_after_the_attempt_budget() {
+        let mut a = new_alloc(0, 100, 100);
+        let r = a.claim().unwrap();
+        // MAX_RANGE_ATTEMPTS failures -> the last returns true (abort).
+        let mut over = false;
+        for _ in 0..MAX_RANGE_ATTEMPTS {
+            over = a.fail(r);
+        }
+        assert!(over, "should signal abort once the budget is exhausted");
+    }
+
+    #[test]
+    fn alloc_contiguous_prefix_stops_at_first_gap() {
+        let mut a = new_alloc(0, 1000, 250);
+        // Complete [0,250), [250,500), [750,1000) - gap at [500,750).
+        a.complete((0, 250));
+        a.complete((250, 250));
+        a.complete((750, 250));
+        assert_eq!(a.contiguous_prefix(), 500);
+        assert!(!a.all_done());
+        // Fill the gap -> whole file is contiguous.
+        a.complete((500, 250));
+        // cursor hasn't reached total in this hand-built alloc, so all_done needs
+        // the cursor advanced too; contiguous_prefix alone is the resume point.
+        assert_eq!(a.contiguous_prefix(), 1000);
+    }
+
+    #[test]
+    fn decide_concurrency_ramps_and_backs_off() {
+        // Improving throughput -> grow multiplicatively (slow-start), capped.
+        assert_eq!(decide_concurrency(100.0, 130.0, 3, 2, 8, 0), 6);
+        assert_eq!(decide_concurrency(100.0, 130.0, 5, 2, 8, 0), 8, "doubling clamps to max");
+        // Errors this interval -> shed a stream (down to min).
+        assert_eq!(decide_concurrency(100.0, 130.0, 3, 2, 8, 2), 2);
+        // Throughput dropped -> shed a stream.
+        assert_eq!(decide_concurrency(100.0, 80.0, 4, 2, 8, 0), 3);
+        // Plateau -> hold.
+        assert_eq!(decide_concurrency(100.0, 103.0, 4, 2, 8, 0), 4);
+        // At the cap, improving cannot push past max.
+        assert_eq!(decide_concurrency(100.0, 200.0, 8, 2, 8, 0), 8);
+        // At the floor, errors cannot push below min.
+        assert_eq!(decide_concurrency(100.0, 50.0, 2, 2, 8, 5), 2);
+    }
+
+    #[test]
+    fn adaptive_chunk_size_scales_and_clamps() {
+        let min = 1 << 20;
+        let max = 8 << 20;
+        // Tiny throughput -> clamp to the floor.
+        assert_eq!(adaptive_chunk_size(1000.0, 0.001, min, max), min);
+        // Huge throughput -> clamp to the ceiling.
+        assert_eq!(adaptive_chunk_size(1_000_000_000.0, 0.01, min, max), max);
+        // Mid throughput (10 MB/s) -> ~0.5s of data = 5 MiB, within bounds.
+        let cs = adaptive_chunk_size(10.0 * 1_048_576.0, 0.005, min, max);
+        assert!(cs > min && cs < max, "expected an in-range chunk, got {cs}");
+        // No measurement yet -> a sane default within bounds.
+        let d = adaptive_chunk_size(0.0, 0.0, min, max);
+        assert!(d >= min && d <= max);
     }
 
     /// Spin up a server sharing `src`, returning (port, handle).
@@ -876,14 +1167,14 @@ mod tests {
 
         let (port, handle) = serve(&src);
         let url = format!("http://127.0.0.1:{port}/download?path=big.bin");
-        // 6 streams, 64 KiB chunks -> ~16 chunks spread across connections.
-        let opts = GetOptions { streams: 6, chunk_size: 64 * 1024 };
+        // Fixed 6 streams, 64 KiB chunks -> ~16 ranges spread across connections.
+        let opts = GetOptions { streams: 6, chunk_size: 64 * 1024, adaptive: false };
         let report = get_with(&url, &dst, opts).expect("multi-stream get");
 
         assert!(report.used_fast, "should use the fast lane");
         assert!(report.verified, "whole-file CRC should verify");
         assert_eq!(report.total, data.len() as u64);
-        assert_eq!(report.streams, 6);
+        assert_eq!(report.streams, 6, "fixed mode uses exactly the requested streams");
         assert_eq!(fs::read(dst.join("big.bin")).unwrap(), data, "reassembled byte-exact");
         assert!(!dst.join(".zap-part-big.bin").exists(), "temp file removed");
 
@@ -913,12 +1204,52 @@ mod tests {
 
         let (port, handle) = serve(&src);
         let url = format!("http://127.0.0.1:{port}/download?path=big.bin");
-        let opts = GetOptions { streams: 4, chunk_size: 64 * 1024 };
+        let opts = GetOptions { streams: 4, chunk_size: 64 * 1024, adaptive: false };
         let report = get_with(&url, &dst, opts).expect("multi-stream resume");
 
         assert!(report.used_fast);
         assert_eq!(report.resumed_from, seeded as u64, "kept the on-disk prefix");
         assert_eq!(fs::read(dst.join("big.bin")).unwrap(), data, "resumed byte-exact");
+
+        handle.stop();
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    /// Adaptive mode (the default) must still be correct: byte-exact + CRC
+    /// verified, and it must resume a partial prefix. Concurrency/chunk sizing
+    /// vary with the run, so we only assert correctness here; the tuning policy
+    /// itself is unit-tested in `decide_concurrency`/`adaptive_chunk_size`.
+    #[test]
+    fn adaptive_download_and_resume_byte_exact() {
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let src = std::env::temp_dir().join(format!("zap-ad-src-{}", std::process::id()));
+        let dst = std::env::temp_dir().join(format!("zap-ad-dst-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let data: Vec<u8> = (0..800_000u32)
+            .map(|i| (i.wrapping_mul(2_246_822_519) >> 9) as u8 ^ (i as u8))
+            .collect();
+        fs::write(src.join("big.bin"), &data).unwrap();
+
+        let (port, handle) = serve(&src);
+        let url = format!("http://127.0.0.1:{port}/download?path=big.bin");
+
+        // Fresh adaptive download.
+        let opts = GetOptions { streams: 8, chunk_size: 256 * 1024, adaptive: true };
+        let report = get_with(&url, &dst, opts).expect("adaptive get");
+        assert!(report.used_fast && report.verified);
+        assert!(report.streams >= 1, "peak concurrency reported");
+        assert_eq!(fs::read(dst.join("big.bin")).unwrap(), data, "adaptive byte-exact");
+
+        // Adaptive resume from a seeded partial.
+        let _ = fs::remove_file(dst.join("big.bin"));
+        fs::write(dst.join(".zap-part-big.bin"), &data[..123_456]).unwrap();
+        let report2 = get_with(&url, &dst, opts).expect("adaptive resume");
+        assert_eq!(report2.resumed_from, 123_456, "adaptive resumes from the prefix");
+        assert_eq!(fs::read(dst.join("big.bin")).unwrap(), data, "adaptive resume byte-exact");
 
         handle.stop();
         let _ = fs::remove_dir_all(&src);
