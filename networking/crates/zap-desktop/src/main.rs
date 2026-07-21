@@ -15,7 +15,29 @@ use znet_core::web::{self, Credentials, Direction, ServeConfig, ServerHandle, Se
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Share,
+    Receive,
     Transfers,
+}
+
+/// A background download started from the Receive tab. The worker thread runs the
+/// blocking fast-lane client and posts its result into `done`; the UI polls
+/// `progress` for the bar and `done` for completion.
+struct RecvJob {
+    progress: std::sync::Arc<web::fast_client::Progress>,
+    done: std::sync::Arc<std::sync::Mutex<Option<Result<RecvDone, String>>>>,
+    started: Instant,
+    url: String,
+}
+
+/// The result of a completed Receive download, for the summary card.
+#[derive(Clone)]
+struct RecvDone {
+    path: String,
+    total: u64,
+    used_fast: bool,
+    verified: bool,
+    streams: usize,
+    secs: f64,
 }
 
 const ACCENT: Color32 = Color32::from_rgb(0xD9, 0x8A, 0x1E); // amber - reads on light & dark
@@ -153,6 +175,12 @@ struct ZapApp {
     tspeed: HashMap<u64, (Instant, u64, f64)>, // per-transfer: last sample time, bytes, smoothed speed
     shot_frames: u32,
     dark: bool,
+    // Receive tab: destination folder, the link being fetched, an in-flight job,
+    // and the last result.
+    recv_dir: PathBuf,
+    recv_url: String,
+    recv_job: Option<RecvJob>,
+    recv_result: Option<Result<RecvDone, String>>,
 }
 
 impl Default for ZapApp {
@@ -161,7 +189,14 @@ impl Default for ZapApp {
             .or_else(dirs::home_dir)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        let recv_dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| dir.clone());
         Self {
+            recv_dir,
+            recv_url: String::new(),
+            recv_job: None,
+            recv_result: None,
             dir,
             port: 8080,
             secure: false,
@@ -260,11 +295,11 @@ impl ZapApp {
         if rows.is_empty() && std::env::var("ZAP_SHOT_DEMO").is_ok() {
             return vec![
                 (
-                    TransferInfo { id: 2, name: "IMG_2231.mov".into(), path: String::new(), direction: Direction::Upload, done: 734_003_200, total: Some(1_610_612_736), finished: false, ok: false, verified: false, elapsed_secs: 12.0 },
+                    TransferInfo { id: 2, name: "IMG_2231.mov".into(), path: String::new(), direction: Direction::Upload, done: 734_003_200, total: Some(1_610_612_736), finished: false, ok: false, verified: false, fast: true, elapsed_secs: 12.0 },
                     28_311_552.0,
                 ),
                 (
-                    TransferInfo { id: 1, name: "Q3-report.pdf".into(), path: String::new(), direction: Direction::Download, done: 2_411_724, total: Some(2_411_724), finished: true, ok: true, verified: true, elapsed_secs: 1.0 },
+                    TransferInfo { id: 1, name: "Q3-report.pdf".into(), path: String::new(), direction: Direction::Download, done: 2_411_724, total: Some(2_411_724), finished: true, ok: true, verified: true, fast: false, elapsed_secs: 1.0 },
                     0.0,
                 ),
             ];
@@ -306,6 +341,21 @@ impl eframe::App for ZapApp {
         }
 
         self.update_speed(ctx);
+        // Poll the Receive job: move its result out when the worker finishes, and
+        // keep repainting while it runs so the progress bar animates.
+        if let Some(job) = &self.recv_job {
+            let finished = job
+                .done
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
+            if let Some(res) = finished {
+                self.recv_result = Some(res);
+                self.recv_job = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(120));
+            }
+        }
         let transfer_rows = self.poll_transfers();
         let running = self.running.is_some();
         let share_dir = self.dir.clone(); // for "Open location" fallback in transfers_view
@@ -360,6 +410,10 @@ impl eframe::App for ZapApp {
                         self.tab = Tab::Share;
                     }
                     ui.add_space(4.0);
+                    if ui.selectable_label(self.tab == Tab::Receive, RichText::new("Receive").size(14.0)).clicked() {
+                        self.tab = Tab::Receive;
+                    }
+                    ui.add_space(4.0);
                     let tlabel = if transfer_rows.is_empty() {
                         "Transfers".to_string()
                     } else {
@@ -387,6 +441,7 @@ impl eframe::App for ZapApp {
                             self.settings_card(ui);
                         }
                     }
+                    Tab::Receive => self.receive_view(ui),
                     Tab::Transfers => transfers_view(ui, running, &transfer_rows, &share_dir),
                 }
                 ui.add_space(6.0);
@@ -519,6 +574,161 @@ impl ZapApp {
             });
         });
     }
+
+    /// The Receive tab: pull a file from another Zap over the fast lane (with
+    /// silent HTTP fallback), showing live progress and a "direct" indicator.
+    fn receive_view(&mut self, ui: &mut egui::Ui) {
+        use std::sync::atomic::Ordering;
+
+        // A download is in flight: show a live progress card.
+        if let Some(job) = &self.recv_job {
+            card(ui, |ui| {
+                ui.label(RichText::new("RECEIVING").size(12.0).strong().color(ACCENT));
+                ui.add_space(6.0);
+                ui.label(RichText::new(truncate_path(&job.url, 40)).size(12.0).weak());
+                ui.add_space(10.0);
+                match job.progress.fraction() {
+                    Some(f) => {
+                        ui.add(egui::ProgressBar::new(f).fill(ACCENT));
+                        let done = job.progress.done.load(Ordering::Relaxed);
+                        let total = job.progress.total.load(Ordering::Relaxed);
+                        let secs = job.started.elapsed().as_secs_f64();
+                        let rate = if secs > 0.0 { done as f64 / secs } else { 0.0 };
+                        ui.add_space(5.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "{} / {} · {}",
+                                human_size(done),
+                                human_size(total),
+                                fmt_speed(rate)
+                            ))
+                            .size(11.5)
+                            .weak(),
+                        );
+                    }
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new());
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Connecting…").size(12.5).weak());
+                        });
+                    }
+                }
+            });
+            return;
+        }
+
+        // Idle: the input form.
+        card(ui, |ui| {
+            ui.label(RichText::new("RECEIVE FROM ANOTHER ZAP").size(11.0).weak());
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(
+                    "Paste a Zap download link. Uses the fast lane when the other end is a Zap app; falls back to HTTP.",
+                )
+                .size(11.5)
+                .weak(),
+            );
+            ui.add_space(8.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.recv_url)
+                    .hint_text("http://192.168.1.5:8080/download?path=movie.mp4&k=…")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Save to").weak());
+                ui.label(RichText::new(truncate_path(&self.recv_dir.display().to_string(), 26)).size(13.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Change").clicked() {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            self.recv_dir = dir;
+                        }
+                    }
+                });
+            });
+            ui.add_space(12.0);
+            let can = !self.recv_url.trim().is_empty();
+            let btn = egui::Button::new(
+                RichText::new("Download").size(15.0).strong().color(Color32::from_rgb(0x1A, 0x12, 0x04)),
+            )
+            .fill(ACCENT_BTN)
+            .rounding(12.0)
+            .min_size(egui::vec2(ui.available_width(), 40.0));
+            if ui.add_enabled(can, btn).clicked() {
+                self.start_receive();
+            }
+        });
+
+        // Last result (success or error).
+        if let Some(res) = self.recv_result.clone() {
+            ui.add_space(12.0);
+            card(ui, |ui| match res {
+                Ok(d) => {
+                    ui.label(RichText::new("✓ Downloaded").size(14.0).strong().color(OK));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(truncate_path(&d.path, 40)).size(12.0));
+                    ui.add_space(4.0);
+                    let lane = if d.used_fast {
+                        format!("⚡ direct · {} streams", d.streams)
+                    } else {
+                        "HTTP".to_string()
+                    };
+                    let verified = if d.verified { " · verified" } else { "" };
+                    let rate = if d.secs > 0.0 { d.total as f64 / d.secs } else { 0.0 };
+                    ui.label(
+                        RichText::new(format!("{} · {} · {}{}", human_size(d.total), lane, fmt_speed(rate), verified))
+                            .size(11.5)
+                            .weak(),
+                    );
+                }
+                Err(e) => {
+                    ui.label(RichText::new("Download failed").size(14.0).strong().color(WARN));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(&e).size(11.5).weak());
+                }
+            });
+        }
+    }
+
+    /// Kick off a Receive download on a background thread.
+    fn start_receive(&mut self) {
+        let url = self.recv_url.trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        let dir = self.recv_dir.clone();
+        let progress = std::sync::Arc::new(web::fast_client::Progress::default());
+        let done = std::sync::Arc::new(std::sync::Mutex::new(None));
+        self.recv_result = None;
+        self.recv_job = Some(RecvJob {
+            progress: std::sync::Arc::clone(&progress),
+            done: std::sync::Arc::clone(&done),
+            started: Instant::now(),
+            url: url.clone(),
+        });
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let out = web::fast_client::get_with_progress(
+                &url,
+                &dir,
+                web::fast_client::GetOptions::default(),
+                progress,
+            )
+            .map(|r| RecvDone {
+                path: r.path.display().to_string(),
+                total: r.total,
+                used_fast: r.used_fast,
+                verified: r.verified,
+                streams: r.streams,
+                secs: started.elapsed().as_secs_f64(),
+            })
+            .map_err(|e| format!("{e:#}"));
+            if let Ok(mut slot) = done.lock() {
+                *slot = Some(out);
+            }
+        });
+    }
 }
 
 fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) {
@@ -592,6 +802,13 @@ fn transfers_view(ui: &mut egui::Ui, running: bool, rows: &[(TransferInfo, f64)]
                         ui.label(RichText::new(txt).size(12.0).color(col));
                     } else {
                         ui.label(RichText::new(fmt_speed(*speed)).monospace().size(12.5).color(ACCENT));
+                    }
+                    // Subtle "direct" badge when this transfer used the native fast
+                    // lane (app-to-app) rather than the HTTP/browser path.
+                    if t.fast {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("⚡direct").size(11.0).strong().color(ACCENT))
+                            .on_hover_text("Sent over the native fast lane (app-to-app, multi-stream)");
                     }
                 });
             });

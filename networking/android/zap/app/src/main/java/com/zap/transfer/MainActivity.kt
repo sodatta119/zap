@@ -58,7 +58,7 @@ class MainActivity : AppCompatActivity() {
     private var polling = false
     private data class Sample(var t: Long, var done: Long, var speed: Double)
     private val speeds = HashMap<Long, Sample>()
-    private data class Xfer(val id: Long, val name: String, val path: String, val dir: String, val done: Long, val total: Long?, val finished: Boolean, val ok: Boolean, val verified: Boolean)
+    private data class Xfer(val id: Long, val name: String, val path: String, val dir: String, val done: Long, val total: Long?, val finished: Boolean, val ok: Boolean, val verified: Boolean, val fast: Boolean)
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -320,12 +320,15 @@ class MainActivity : AppCompatActivity() {
             row.findViewById<TextView>(R.id.arrow).text = if (incoming) "⬇" else "⬆"
             row.findViewById<TextView>(R.id.name).text = t.name
             val dirTxt = if (incoming) "Incoming" else "Outgoing"
+            // A subtle marker when the transfer went over the native fast lane
+            // (app-to-app, multi-stream) rather than the HTTP/browser path.
+            val lane = if (t.fast) " · ⚡ direct" else ""
             row.findViewById<TextView>(R.id.sub).text =
                 if (t.total != null && t.total > 0) {
                     val pct = (t.done.toDouble() / t.total * 100).coerceAtMost(100.0).toInt()
-                    "$dirTxt · ${humanBytes(t.done)} / ${humanBytes(t.total)} ($pct%)"
+                    "$dirTxt · ${humanBytes(t.done)} / ${humanBytes(t.total)} ($pct%)$lane"
                 } else {
-                    "$dirTxt · ${humanBytes(t.done)}"
+                    "$dirTxt · ${humanBytes(t.done)}$lane"
                 }
             val rate = row.findViewById<TextView>(R.id.rate)
             if (t.finished) {
@@ -385,6 +388,7 @@ class MainActivity : AppCompatActivity() {
                         finished = o.getBoolean("finished"),
                         ok = o.getBoolean("ok"),
                         verified = o.optBoolean("verified", false),
+                        fast = o.optBoolean("fast", false),
                     )
                 )
             }

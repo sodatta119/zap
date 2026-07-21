@@ -304,6 +304,7 @@ fn handle_get<S: Read + Write>(
         .unwrap_or_else(|| "download".to_string());
     let path_key = fpath.to_string_lossy().into_owned();
     let transfer = stats.begin_download(&path_key, &filename, Some(total), &path_key);
+    transfer.fast.store(true, Ordering::Relaxed);
     transfer.done.fetch_max(start, Ordering::Relaxed);
 
     // ---- Data: raw bytes for [start, start+len) ----
@@ -377,6 +378,7 @@ fn handle_put<S: Read + Write>(
     let key = part.to_string_lossy().into_owned();
     let dest_str = dest.to_string_lossy().into_owned();
     let transfer = stats.begin_upload(&key, &name, Some(total), &dest_str);
+    transfer.fast.store(true, Ordering::Relaxed);
     transfer.done.fetch_max(cur, Ordering::Relaxed);
 
     // ---- Receive [cur, total) and append to the temp file ----

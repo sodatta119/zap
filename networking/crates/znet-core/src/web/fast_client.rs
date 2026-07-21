@@ -92,6 +92,27 @@ impl Default for GetOptions {
     }
 }
 
+/// Live progress of a transfer, for a GUI to poll. `total` is 0 until the size
+/// is known (after the initial stat); `done` counts bytes on disk including any
+/// resumed prefix.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub total: AtomicU64,
+    pub done: AtomicU64,
+}
+
+impl Progress {
+    /// Fraction complete in `0.0..=1.0`, or `None` while the total is unknown.
+    pub fn fraction(&self) -> Option<f32> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total == 0 {
+            return None;
+        }
+        let done = self.done.load(Ordering::Relaxed);
+        Some((done as f32 / total as f32).clamp(0.0, 1.0))
+    }
+}
+
 /// Download the file named by a Zap link into `dest` (a file path or a
 /// directory), using the fast lane when available and falling back to HTTP.
 pub fn get(url: &str, dest: &Path) -> Result<Report> {
@@ -100,6 +121,17 @@ pub fn get(url: &str, dest: &Path) -> Result<Report> {
 
 /// Like [`get`], with explicit fast-lane tunables.
 pub fn get_with(url: &str, dest: &Path, opts: GetOptions) -> Result<Report> {
+    get_with_progress(url, dest, opts, Arc::new(Progress::default()))
+}
+
+/// Like [`get_with`], reporting live progress into `progress` (poll it from
+/// another thread to drive a progress bar).
+pub fn get_with_progress(
+    url: &str,
+    dest: &Path,
+    opts: GetOptions,
+    progress: Arc<Progress>,
+) -> Result<Report> {
     let target = parse_target(url)?;
     let (folder, final_path) = resolve_dest(dest, &target.filename);
     fs::create_dir_all(&folder)
@@ -117,7 +149,7 @@ pub fn get_with(url: &str, dest: &Path, opts: GetOptions) -> Result<Report> {
     let fast_port = probe_fast_port(&target).unwrap_or(None);
 
     if let Some(fp) = fast_port {
-        match fast_download(&target, fp, &part, opts) {
+        match fast_download(&target, fp, &part, opts, &progress) {
             Ok((total, verified, resumed, streams)) => {
                 finalize(&part, &final_path)?;
                 return Ok(Report {
@@ -137,7 +169,7 @@ pub fn get_with(url: &str, dest: &Path, opts: GetOptions) -> Result<Report> {
 
     // HTTP fallback - resumes from whatever the fast lane already wrote (a
     // multi-stream attempt leaves a valid contiguous prefix on failure).
-    let (total, resumed) = http_download(&target, &part)?;
+    let (total, resumed) = http_download(&target, &part, &progress)?;
     finalize(&part, &final_path)?;
     Ok(Report {
         path: final_path,
@@ -266,6 +298,8 @@ struct Shared {
     /// Set to unwind everything on a fatal error, or once complete.
     abort: AtomicBool,
     done: AtomicBool,
+    /// Caller-visible progress (bytes done / total), for a GUI progress bar.
+    progress: Arc<Progress>,
 }
 
 /// Drive an (optionally adaptive) multi-stream fast-lane download.
@@ -285,6 +319,7 @@ fn fast_download(
     fast_port: u16,
     part: &Path,
     opts: GetOptions,
+    progress: &Arc<Progress>,
 ) -> Result<(u64, bool, u64, usize)> {
     let (total, crc) = fast_stat(t, fast_port)?;
 
@@ -294,6 +329,8 @@ fn fast_download(
     if start > total {
         start = 0;
     }
+    progress.total.store(total, Ordering::Relaxed);
+    progress.done.store(start, Ordering::Relaxed);
 
     // Pre-size to the full length so workers can write ranges at absolute offsets;
     // the existing [0, start) prefix is preserved, the rest zero-filled.
@@ -346,6 +383,7 @@ fn fast_download(
         rtt_ns: AtomicU64::new(0),
         abort: AtomicBool::new(false),
         done: AtomicBool::new(false),
+        progress: Arc::clone(progress),
     });
 
     run_pool(&shared, t, fast_port, opts, min_streams, max_streams);
@@ -487,6 +525,7 @@ fn worker(shared: Arc<Shared>, t: Target, fast_port: u16) {
         match download_range(&shared, &t, fast_port, &file, range) {
             Ok(written) => {
                 shared.bytes.fetch_add(written, Ordering::SeqCst);
+                shared.progress.done.fetch_add(written, Ordering::Relaxed);
                 lock(&shared.alloc).complete(range);
             }
             Err(_) => {
@@ -915,7 +954,7 @@ fn read_put_reply(stream: &mut Conn) -> Result<u64> {
 /// Finish (or perform) the download over the HTTP path, resuming from any bytes
 /// already on disk via a `Range` request. Returns the whole-file size and the
 /// offset it resumed from.
-fn http_download(t: &Target, part: &Path) -> Result<(u64, u64)> {
+fn http_download(t: &Target, part: &Path, progress: &Progress) -> Result<(u64, u64)> {
     let on_disk = fs::metadata(part).map(|m| m.len()).unwrap_or(0);
     let mut headers = auth_headers(t);
     if on_disk > 0 {
@@ -934,6 +973,8 @@ fn http_download(t: &Target, part: &Path) -> Result<(u64, u64)> {
     // file (Range ignored or none requested), so restart from zero.
     let start = if resp.status == 206 { on_disk } else { 0 };
     let total = if resp.status == 206 { start + body_len } else { body_len };
+    progress.total.store(total, Ordering::Relaxed);
+    progress.done.store(start, Ordering::Relaxed);
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -953,6 +994,7 @@ fn http_download(t: &Target, part: &Path) -> Result<(u64, u64)> {
         }
         file.write_all(&buf[..n])?;
         remaining -= n as u64;
+        progress.done.fetch_add(n as u64, Ordering::Relaxed);
     }
     file.flush()?;
 
@@ -1384,14 +1426,15 @@ mod tests {
         let part = dst.join(".zap-part-f.bin");
 
         // Fresh download over HTTP.
-        let (total, resumed) = http_download(&target, &part).expect("http download");
+        let prog = Progress::default();
+        let (total, resumed) = http_download(&target, &part, &prog).expect("http download");
         assert_eq!(total, data.len() as u64);
         assert_eq!(resumed, 0);
         assert_eq!(fs::read(&part).unwrap(), data, "HTTP download byte-exact");
 
         // Pre-seed a partial and confirm it resumes via Range (206).
         fs::write(&part, &data[..80_000]).unwrap();
-        let (total2, resumed2) = http_download(&target, &part).expect("http resume");
+        let (total2, resumed2) = http_download(&target, &part, &prog).expect("http resume");
         assert_eq!(total2, data.len() as u64);
         assert_eq!(resumed2, 80_000, "should resume from the on-disk offset");
         assert_eq!(fs::read(&part).unwrap(), data, "HTTP resume byte-exact");

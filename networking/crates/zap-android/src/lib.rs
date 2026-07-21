@@ -187,7 +187,8 @@ pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeShareUrl<'local>
 }
 
 /// Return recent transfers as a JSON array, or "[]" for an invalid handle.
-/// Each item: `{"id","name","dir":"up"|"down","done","total"|null,"finished","ok"}`.
+/// Each item: `{"id","name","path","dir":"up"|"down","done","total"|null,
+/// "finished","ok","verified","fast"}` (`fast` = went over the native fast lane).
 #[no_mangle]
 pub extern "system" fn Java_com_zap_transfer_NativeBridge_nativeTransfers<'local>(
     env: JNIEnv<'local>,
@@ -219,7 +220,7 @@ fn transfers_json(items: &[znet_core::web::TransferInfo]) -> String {
         };
         let total = t.total.map(|n| n.to_string()).unwrap_or_else(|| "null".to_string());
         s.push_str(&format!(
-            "{{\"id\":{},\"name\":{},\"path\":{},\"dir\":\"{}\",\"done\":{},\"total\":{},\"finished\":{},\"ok\":{},\"verified\":{}}}",
+            "{{\"id\":{},\"name\":{},\"path\":{},\"dir\":\"{}\",\"done\":{},\"total\":{},\"finished\":{},\"ok\":{},\"verified\":{},\"fast\":{}}}",
             t.id,
             json_string(&t.name),
             json_string(&t.path),
@@ -228,7 +229,8 @@ fn transfers_json(items: &[znet_core::web::TransferInfo]) -> String {
             total,
             t.finished,
             t.ok,
-            t.verified
+            t.verified,
+            t.fast
         ));
     }
     s.push(']');

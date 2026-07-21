@@ -181,6 +181,9 @@ struct TransferState {
     ok: AtomicBool,
     /// True once a completed upload passed its crc32 integrity check.
     verified: AtomicBool,
+    /// True when this transfer went over the native fast lane (custom TCP
+    /// transport) rather than the HTTP/browser path - drives the "direct" badge.
+    fast: AtomicBool,
     started: Instant,
 }
 
@@ -198,6 +201,8 @@ pub struct TransferInfo {
     pub ok: bool,
     /// True once a completed upload passed its crc32 integrity check.
     pub verified: bool,
+    /// True when the transfer used the native fast lane (not the HTTP path).
+    pub fast: bool,
     pub elapsed_secs: f64,
 }
 
@@ -284,6 +289,9 @@ impl Stats {
                 finished: AtomicBool::new(true),
                 ok: AtomicBool::new(f[4] == "1"),
                 verified: AtomicBool::new(f[5] == "1"),
+                // Not persisted (keeps the history TSV format stable); reloaded
+                // rows simply don't show the "direct" badge.
+                fast: AtomicBool::new(false),
                 started: Instant::now(),
             }));
         }
@@ -349,6 +357,7 @@ impl Stats {
             finished: AtomicBool::new(false),
             ok: AtomicBool::new(false),
             verified: AtomicBool::new(false),
+            fast: AtomicBool::new(false),
             started: Instant::now(),
         });
         if let Ok(mut list) = self.transfers.lock() {
@@ -394,6 +403,7 @@ impl ServerHandle {
                 finished: t.finished.load(Ordering::Relaxed),
                 ok: t.ok.load(Ordering::Relaxed),
                 verified: t.verified.load(Ordering::Relaxed),
+                fast: t.fast.load(Ordering::Relaxed),
                 elapsed_secs: t.started.elapsed().as_secs_f64(),
             })
             .collect()
